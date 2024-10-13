@@ -1,0 +1,20 @@
+import { type PageProps } from "$fresh/server.ts";
+import { IS_BROWSER } from "$fresh/runtime.ts";
+import { effect } from "@preact/signals";
+import { initializeWebSocket } from "../islands/ws/signals.ts";
+
+export default function App({ Component }: PageProps) {
+  return (
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>pete5000</title>
+        <link rel="stylesheet" href="/styles.css" />
+      </head>
+      <body>
+        <Component />
+      </body>
+    </html>
+  );
+}
