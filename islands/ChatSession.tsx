@@ -10,7 +10,7 @@ export default function ChatSession() {
         protocols: "",
     });
 
-    // This is the main entry point for initializing the WebSocket connection
+    // Initialize the WebSocket connection
     useEffect(() => {
         initializeWebSocket();
 
@@ -53,6 +53,14 @@ export default function ChatSession() {
         );
     }
 
+    const handleSegment = (message: {
+        type: "VAD_START" | "VAD_STOP" | "UTTERANCE" | "SEGMENT";
+        data?: Uint8Array;
+    }) => {
+        if (!ws.value) return;
+        ws.value.send(JSON.stringify(message));
+    };
+
     return (
         <div>
             <details>
@@ -71,7 +79,7 @@ export default function ChatSession() {
                     </li>
                 </ul>
             </details>
-            <SpeechInput ws={ws} />
+            <SpeechInput onSegment={handleSegment} />
         </div>
     );
 }
