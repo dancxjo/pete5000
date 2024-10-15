@@ -2,8 +2,15 @@ import { type Signal, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { arrayBufferToBase64 } from "../../lib/buffer_transformations.ts";
 
-interface SegmentMessage {
-  type: "VAD_START" | "VAD_STOP" | "UTTERANCE" | "SEGMENT";
+export interface SegmentMessage {
+  type:
+    | "VAD_START"
+    | "VAD_STOP"
+    | "UTTERANCE"
+    | "SEGMENT"
+    | "PARTIAL_TRANSCRIPTION"
+    | "TRANSCRIPTION"
+    | "ERROR";
   data?: string;
 }
 
@@ -18,7 +25,7 @@ export default function SpeechInput(props: SpeechInputProps) {
   useEffect(() => {
     let cleanupFunc = () => {};
     if (isListening.value) {
-      cleanupFunc = setupMicrophone(props, isVoiceDetected);
+      cleanupFunc = setupMicrophone(props, isVoiceDetected, isListening);
     }
     return cleanupFunc;
   }, [isListening.value]);
@@ -46,6 +53,7 @@ export default function SpeechInput(props: SpeechInputProps) {
 function setupMicrophone(
   props: SpeechInputProps,
   isVoiceDetected: Signal<boolean>,
+  isListening: Signal<boolean>,
 ) {
   let mediaRecorder: MediaRecorder | null = null;
   let mediaStream: MediaStream | null = null;
@@ -66,6 +74,9 @@ function setupMicrophone(
     return () => {};
   }
 
+  let lastSegment: ArrayBuffer | null = null;
+
+  // Setup voice activity detection & record ongoing segments of audio
   navigator.mediaDevices
     .getUserMedia({ audio: true })
     .then(async (stream) => {
@@ -105,6 +116,34 @@ function setupMicrophone(
           }
         }
       };
+
+      function recordSegment() {
+        // Create a separate recorder for ongoing segment recording
+        // This lets us send in the few milliseconds of audio before VAD starts, preserving onset consonants, and allows for the server to provide ongoing transcription
+        const segmentRecorder = new MediaRecorder(stream, { mimeType });
+        segmentRecorder.ondataavailable = async (event) => {
+          // console.log("Segment recording available", event.data.size);
+          if (event.data && event.data.size > 0) {
+            lastSegment = await event.data.arrayBuffer();
+            // Send the ongoing segment to the parent component
+            if (isVoiceDetected.value) {
+              props.onSegment({
+                type: "SEGMENT",
+                data: arrayBufferToBase64(lastSegment),
+              });
+            }
+          }
+        };
+        setTimeout(() => {
+          segmentRecorder.stop();
+        }, 500);
+        if (segmentRecorder.state === "inactive" && isListening.value) {
+          segmentRecorder.start();
+        }
+      }
+
+      // Record ongoing segments of audio
+      setInterval(recordSegment, 550);
     })
     .catch((error) => {
       console.error("Error accessing microphone:", error);
@@ -114,6 +153,14 @@ function setupMicrophone(
     if (!mediaStream) {
       console.error("Media stream is not available.");
       return;
+    }
+
+    // Send the last segment of "silence" to capture initial consonants
+    if (lastSegment) {
+      props.onSegment({
+        type: "SEGMENT",
+        data: arrayBufferToBase64(lastSegment),
+      });
     }
 
     mediaRecorder = new MediaRecorder(mediaStream, { mimeType });

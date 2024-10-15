@@ -2,9 +2,12 @@ import { Handlers } from "$fresh/server.ts";
 import { base64ToArrayBuffer } from "../../lib/buffer_transformations.ts";
 
 interface ClientSession {
-    segments: Blob[];
+    abortController: AbortController;
+    segments: ArrayBuffer[];
     isRecording: boolean;
     lastActivity: number;
+    fullTranscription?: string;
+    latestSegmentEmitted?: number;
 }
 
 const sessions = new Map<WebSocket, ClientSession>();
@@ -12,57 +15,35 @@ const sessions = new Map<WebSocket, ClientSession>();
 export const handler: Handlers = {
     async GET(req, _ctx) {
         const { socket, response } = Deno.upgradeWebSocket(req);
-
-        socket.onopen = () => {
-            console.log("WebSocket connection opened");
-            // Initialize a session for the client
-            sessions.set(socket, {
-                segments: [],
-                isRecording: false,
-                lastActivity: Date.now(),
-            });
-        };
-
-        socket.onmessage = async (event) => {
-            return handleControlMessage(socket, event.data);
-        };
-
-        socket.onclose = (event) => {
-            console.log(
-                "WebSocket connection closed",
-                event.code,
-                event.reason,
-            );
-            // Clean up the session
-            sessions.delete(socket);
-        };
-
-        socket.onerror = (err) => {
-            console.error("WebSocket error:", err);
-            sessions.delete(socket);
-        };
-
+        setupWebSocketHandlers(socket);
         return response;
     },
 };
 
-export interface ControlMessage {
-    type: "VAD_START" | "VAD_STOP" | "UTTERANCE" | "SEGMENT";
-    data?: string;
+// Set up WebSocket event handlers to manage the lifecycle of a client session
+function setupWebSocketHandlers(socket: WebSocket) {
+    socket.onopen = () => handleWebSocketOpen(socket);
+    socket.onmessage = (event) => handleWebSocketMessage(socket, event.data);
+    socket.onclose = (event) => handleWebSocketClose(socket, event);
+    socket.onerror = (err) => handleWebSocketError(socket, err);
 }
 
-function isValidControlMessage(message: unknown): message is ControlMessage {
-    if (
-        !message || typeof message !== "object" ||
-        !("type" in message) || typeof message.type !== "string"
-    ) {
-        return false;
-    }
-    return true;
+function handleWebSocketOpen(socket: WebSocket) {
+    console.log("WebSocket connection opened");
+    // Initialize a session for the client
+    sessions.set(socket, createClientSession());
 }
 
-// Function to handle control messages (e.g., VAD state)
-function handleControlMessage(socket: WebSocket, message: string) {
+function createClientSession(): ClientSession {
+    return {
+        segments: [],
+        isRecording: false,
+        lastActivity: Date.now(),
+        abortController: new AbortController(),
+    };
+}
+
+function handleWebSocketMessage(socket: WebSocket, message: string) {
     const session = sessions.get(socket);
     if (!session) return;
 
@@ -72,62 +53,264 @@ function handleControlMessage(socket: WebSocket, message: string) {
             console.log("Invalid control message:", message);
             return;
         }
-
-        switch (controlMessage.type) {
-            case "VAD_START":
-                session.isRecording = true;
-                session.segments = [];
-                console.log("VAD_START received");
-                break;
-            case "VAD_STOP":
-                session.isRecording = false;
-                console.log("VAD_STOP received");
-                session.segments = [];
-                break;
-            case "UTTERANCE": {
-                console.log("Received an utterance");
-                if (!controlMessage.data) {
-                    console.log("No data in utterance message");
-                    return;
-                }
-                console.log({ controlMessage });
-                const data = base64ToArrayBuffer(controlMessage.data);
-                getWhisperTranscription(new Uint8Array(data)).then(
-                    (transcription) => {
-                        socket.send(
-                            `{ "transcription": "${transcription}", "final": true }`,
-                        );
-                    },
-                ).catch((error) => {
-                    console.error("Error processing utterance:", error);
-                    socket.send('{"error": "Error processing utterance"}');
-                });
-                break;
-            }
-            default:
-                console.log("Unknown control message:", controlMessage.type);
-        }
+        handleControlMessage(socket, session, controlMessage);
     } catch (error) {
-        console.error("Error processing utterance:", error);
-        socket.send("Error processing utterance");
+        console.error("Error processing control message:", error);
+        sendErrorMessage(socket, "Error processing control message");
     }
 }
 
-let counter = Date.now().valueOf();
+function handleWebSocketClose(socket: WebSocket, event: CloseEvent) {
+    console.log("WebSocket connection closed", event.code, event.reason);
+    // Clean up the session
+    sessions.delete(socket);
+}
 
-// Adjusted getWhisperTranscription to accept a file path
+function handleWebSocketError(socket: WebSocket, err: Event | Error) {
+    console.error("WebSocket error:", err);
+    sessions.delete(socket);
+}
+
+export interface ControlMessage {
+    type: "VAD_START" | "VAD_STOP" | "UTTERANCE" | "SEGMENT";
+    data?: string;
+}
+
+function isValidControlMessage(message: unknown): message is ControlMessage {
+    return (
+        message &&
+        typeof message === "object" &&
+        "type" in message &&
+        typeof (message as any).type === "string"
+    );
+}
+
+// Handles control messages received from the client
+function handleControlMessage(
+    socket: WebSocket,
+    session: ClientSession,
+    controlMessage: ControlMessage,
+) {
+    switch (controlMessage.type) {
+        case "VAD_START":
+            startVAD(session);
+            break;
+        case "VAD_STOP":
+            stopVAD(session);
+            break;
+        case "SEGMENT":
+            processControlSegment(socket, session, controlMessage);
+            break;
+        case "UTTERANCE":
+            processControlUtterance(socket, session, controlMessage);
+            break;
+        default:
+            console.log("Unknown control message type:", controlMessage.type);
+    }
+}
+
+function startVAD(session: ClientSession) {
+    session.isRecording = true;
+    session.segments = [];
+    console.log("VAD_START received");
+}
+
+function stopVAD(session: ClientSession) {
+    session.isRecording = false;
+    session.segments = [];
+    console.log("VAD_STOP received");
+}
+
+function processControlSegment(
+    socket: WebSocket,
+    session: ClientSession,
+    controlMessage: ControlMessage,
+) {
+    console.log("Received a segment");
+    if (!controlMessage.data) {
+        console.log("No data in segment message");
+        return;
+    }
+
+    // Save the segment data
+    const data = base64ToArrayBuffer(controlMessage.data);
+    session.segments.push(data);
+    console.log("Received a segment");
+    const segmentId = session.segments.length;
+
+    // Abort the previous transcription process if it exists
+    abortPreviousTranscription(session);
+
+    // Start processing the new segment
+    processAudio(socket, session, segmentId, session.segments, true);
+}
+
+function processControlUtterance(
+    socket: WebSocket,
+    session: ClientSession,
+    controlMessage: ControlMessage,
+) {
+    console.log("Received an utterance");
+    if (!controlMessage.data) {
+        console.log("No data in utterance message");
+        return;
+    }
+
+    // Clear the segments
+    session.segments = [];
+    const data = base64ToArrayBuffer(controlMessage.data);
+
+    // Abort the previous transcription process if it exists
+    abortPreviousTranscription(session);
+
+    // Start processing the utterance
+    processAudio(socket, session, 0, [data], false);
+}
+
+function abortPreviousTranscription(session: ClientSession) {
+    if (session.abortController) {
+        session.abortController.abort();
+    }
+    session.abortController = new AbortController();
+}
+
+async function processAudio(
+    socket: WebSocket,
+    session: ClientSession,
+    segmentId: number,
+    segments: ArrayBuffer[],
+    isPartial: boolean,
+) {
+    const { signal } = session.abortController;
+    try {
+        const wavData = await Promise.all(
+            segments.map((segment) => convertWebmToWav(segment)),
+        );
+
+        if (signal.aborted) {
+            console.log("Processing aborted for segment:", segmentId);
+            return;
+        }
+
+        const head = wavData.shift();
+        if (!head) return;
+        const tail = wavData.map(stripWavHeader);
+        const wav = new Blob([head, ...tail], { type: "audio/wav" });
+        const wavBytes = new Uint8Array(await wav.arrayBuffer());
+        const transcription = await getWhisperTranscription(
+            wavBytes,
+            session.fullTranscription ?? "",
+        );
+
+        if (signal.aborted) {
+            console.log("Transcription aborted for segment:", segmentId);
+            return;
+        }
+
+        if (transcription) {
+            if (isPartial) {
+                sendPartialTranscription(
+                    socket,
+                    session,
+                    transcription,
+                    segmentId,
+                );
+            } else {
+                session.fullTranscription = `${
+                    session.fullTranscription ?? ""
+                } ${transcription}`.trim();
+                sendTranscription(socket, transcription);
+            }
+        }
+    } catch (error) {
+        handleProcessingError(
+            socket,
+            error,
+            isPartial ? "segment" : "utterance",
+        );
+    }
+}
+
+function sendPartialTranscription(
+    socket: WebSocket,
+    session: ClientSession,
+    transcription: string,
+    segmentId: number,
+) {
+    if ((session.latestSegmentEmitted ?? 0) > segmentId) {
+        console.warn("Unnecessary transcription:", transcription);
+        return;
+    }
+    const reply = {
+        type: "PARTIAL_TRANSCRIPTION",
+        data: transcription,
+        basedOn: segmentId,
+    };
+    if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(reply));
+    } else {
+        console.warn("Attempted to send message on a closed WebSocket:", reply);
+    }
+    session.latestSegmentEmitted = segmentId;
+}
+
+function sendTranscription(socket: WebSocket, transcription: string) {
+    const reply = {
+        type: "TRANSCRIPTION",
+        data: transcription,
+    };
+    if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(reply));
+    } else {
+        console.warn("Attempted to send message on a closed WebSocket:", reply);
+    }
+}
+
+function sendErrorMessage(socket: WebSocket, errorMessage: string) {
+    const error = {
+        type: "ERROR",
+        data: errorMessage,
+    };
+    if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(reply));
+    } else {
+        console.warn("Attempted to send message on a closed WebSocket:", reply);
+    }
+}
+
+function handleProcessingError(
+    socket: WebSocket,
+    error: any,
+    context: "segment" | "utterance",
+) {
+    if (
+        error instanceof DOMException && error.name === "InvalidStateError" &&
+        socket.readyState !== WebSocket.OPEN
+    ) {
+        console.warn(
+            "WebSocket is not open, cannot send error message for:",
+            context,
+        );
+        return;
+    }
+    if (error.name === "AbortError") {
+        console.log("Promise cancelled:", error.message);
+        return;
+    }
+
+    console.error(`Error processing ${context}:`, error);
+    sendErrorMessage(socket, `Error processing ${context}`);
+}
+
 export async function getWhisperTranscription(
     webmData: Uint8Array,
+    initialPrompt: string = "",
 ): Promise<string> {
     const whisperUrl = new URL(
         (Deno.env.get("WHISPER_HOST") ?? "http://localhost:9000") + "/asr",
     );
-    // Fill in the other parameters as needed
-    whisperUrl.searchParams.append("language", "en"); // Adjust parameter name as needed
-
-    // const wavData = await convertWebmToWav(webmData);
-    // Deno.writeFileSync(`audio${counter++}.webm`, webmData);
-    // Read the WAV file
+    whisperUrl.searchParams.append("language", "en");
+    whisperUrl.searchParams.append("initial_prompt", initialPrompt);
     const wavFile = new File([webmData], "audio.wav");
 
     const body = new FormData();
@@ -145,41 +328,39 @@ export async function getWhisperTranscription(
     }
 
     const transcription = await whisperResponse.text();
-    return transcription;
+    return transcription.trim();
 }
 
-async function convertWebmToWav(webmData: Uint8Array): Promise<Uint8Array> {
-    // Use FFmpeg with stdin and stdout to handle in-memory data
+async function convertWebmToWav(webmData: ArrayBuffer): Promise<Uint8Array> {
     const command = new Deno.Command("ffmpeg", {
         args: [
             "-i",
-            "pipe:0", // Read input from stdin
+            "pipe:0",
             "-f",
-            "wav", // Force output format to WAV
-            "pipe:1", // Write output to stdout
+            "wav",
+            "pipe:1",
         ],
-        stdin: "piped", // Provide stdin from memory
-        stdout: "piped", // Capture stdout to memory
-        stderr: "piped", // Capture stderr for error handling
+        stdin: "piped",
+        stdout: "piped",
+        stderr: "piped",
     });
 
-    // Start the ffmpeg process
     const process = command.spawn();
-
-    // Write WebM data to ffmpeg's stdin
     const writer = process.stdin.getWriter();
-    await writer.write(webmData);
+    const data = new Uint8Array(webmData);
+    await writer.write(data);
     await writer.close();
 
-    // Capture ffmpeg's stdout (the WAV data)
     const output = await process.output();
 
-    // Check for errors
     if (!output.success) {
         const errorMessage = new TextDecoder().decode(output.stderr);
         throw new Error(`Failed to convert WebM to WAV: ${errorMessage}`);
     }
 
-    // Return the resulting WAV data
     return output.stdout;
+}
+
+function stripWavHeader(wavData: Uint8Array): Uint8Array {
+    return wavData.slice(44);
 }

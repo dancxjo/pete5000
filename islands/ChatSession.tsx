@@ -1,6 +1,7 @@
-import SpeechInput from "./audio/SpeechInput.tsx";
+import SpeechInput, { type SegmentMessage } from "./audio/SpeechInput.tsx";
 import { initializeWebSocket, ws } from "./ws/signals.ts";
 import { useEffect, useState } from "preact/hooks";
+import { useSignal } from "@preact/signals";
 
 export default function ChatSession() {
     const [connectionStatus, setConnectionStatus] = useState("Connecting...");
@@ -9,6 +10,11 @@ export default function ChatSession() {
         readyState: 0,
         protocols: "",
     });
+
+    const pretranscription = useSignal("");
+    const transcription = useSignal("");
+
+    let lastTranscriptionBasedOn = 0;
 
     // Initialize the WebSocket connection
     useEffect(() => {
@@ -39,8 +45,39 @@ export default function ChatSession() {
             };
 
             // Log data if any messages are received
-            ws.value.onmessage = (message) => {
-                console.log("WebSocket message received:", message.data);
+            ws.value.onmessage = (mensaje) => {
+                console.log("WebSocket message received:", mensaje.data);
+                try {
+                    const message = JSON.parse(mensaje.data);
+                    if (
+                        !message || typeof message !== "object" ||
+                        !("type" in message)
+                    ) {
+                        console.error("Invalid WebSocket message:", message);
+                        return;
+                    }
+
+                    if (message.type === "TRANSCRIPTION") {
+                        transcription.value = `${
+                            transcription ?? ""
+                        } ${message.data}`
+                            .trim();
+                        // Reset the last transcription for the next transaction
+                        lastTranscriptionBasedOn = 0;
+                        pretranscription.value = "";
+                    } else {
+                        const basedOn = message.basedOn ?? 0;
+                        if (basedOn > lastTranscriptionBasedOn) {
+                            pretranscription.value = message.data;
+                            lastTranscriptionBasedOn = basedOn;
+                        }
+                    }
+                } catch (error) {
+                    console.error("Error parsing WebSocket message:", {
+                        error,
+                        data: mensaje.data,
+                    });
+                }
             };
         }
     }, []);
@@ -53,10 +90,7 @@ export default function ChatSession() {
         );
     }
 
-    const handleSegment = (message: {
-        type: "VAD_START" | "VAD_STOP" | "UTTERANCE" | "SEGMENT";
-        data?: Uint8Array;
-    }) => {
+    const handleSegment = (message: SegmentMessage) => {
         if (!ws.value) return;
         ws.value.send(JSON.stringify(message));
     };
@@ -80,6 +114,12 @@ export default function ChatSession() {
                 </ul>
             </details>
             <SpeechInput onSegment={handleSegment} />
+            <p>
+                {pretranscription.value}
+            </p>
+            <p>
+                <strong>{transcription.value}</strong>
+            </p>
         </div>
     );
 }
