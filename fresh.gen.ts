@@ -5,11 +5,8 @@
 import * as $_404 from "./routes/_404.tsx";
 import * as $_app from "./routes/_app.tsx";
 import * as $api_chat from "./routes/api/chat.ts";
-import * as $api_joke from "./routes/api/joke.ts";
-import * as $greet_name_ from "./routes/greet/[name].tsx";
 import * as $index from "./routes/index.tsx";
 import * as $ChatSession from "./islands/ChatSession.tsx";
-import * as $Counter from "./islands/Counter.tsx";
 import * as $audio_SpeechInput from "./islands/audio/SpeechInput.tsx";
 import * as $audio_signals from "./islands/audio/signals.ts";
 import * as $ws_signals from "./islands/ws/signals.ts";
@@ -20,13 +17,10 @@ const manifest = {
     "./routes/_404.tsx": $_404,
     "./routes/_app.tsx": $_app,
     "./routes/api/chat.ts": $api_chat,
-    "./routes/api/joke.ts": $api_joke,
-    "./routes/greet/[name].tsx": $greet_name_,
     "./routes/index.tsx": $index,
   },
   islands: {
     "./islands/ChatSession.tsx": $ChatSession,
-    "./islands/Counter.tsx": $Counter,
     "./islands/audio/SpeechInput.tsx": $audio_SpeechInput,
     "./islands/audio/signals.ts": $audio_signals,
     "./islands/ws/signals.ts": $ws_signals,

@@ -136,14 +136,14 @@ function setupMicrophone(
         };
         setTimeout(() => {
           segmentRecorder.stop();
+          recordSegment();
         }, 500);
         if (segmentRecorder.state === "inactive" && isListening.value) {
           segmentRecorder.start();
         }
       }
 
-      // Record ongoing segments of audio
-      setInterval(recordSegment, 550);
+      recordSegment();
     })
     .catch((error) => {
       console.error("Error accessing microphone:", error);

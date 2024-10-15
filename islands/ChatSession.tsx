@@ -66,10 +66,16 @@ export default function ChatSession() {
                         lastTranscriptionBasedOn = 0;
                         pretranscription.value = "";
                     } else {
+                        console.log("Received message:", message);
                         const basedOn = message.basedOn ?? 0;
                         if (basedOn > lastTranscriptionBasedOn) {
                             pretranscription.value = message.data;
                             lastTranscriptionBasedOn = basedOn;
+                        } else {
+                            console.log(
+                                "Ignoring message based on old transcription:",
+                                message,
+                            );
                         }
                     }
                 } catch (error) {

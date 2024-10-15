@@ -16,6 +16,8 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
       - "./letsencrypt:/letsencrypt"
+    depends_on:
+      - deno_project
 
   deno_project:
     build:
@@ -38,7 +40,6 @@ services:
       - WHISPER_HOST=http://whisper:9000
       - NEO4J_HOST=bolt://neo4j:7687
     depends_on:
-      - traefik
       - ollama
       - neo4j
       - tts
