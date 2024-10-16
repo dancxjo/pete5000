@@ -8,8 +8,8 @@ export interface SegmentMessage {
     | "VAD_STOP"
     | "UTTERANCE"
     | "SEGMENT"
-    | "PARTIAL_TRANSCRIPTION"
-    | "TRANSCRIPTION"
+    | "PREDICTION_UPDATE"
+    | "FINAL_TRANSCRIPTION"
     | "ERROR";
   data?: string;
 }
@@ -118,15 +118,18 @@ function setupMicrophone(
       };
 
       function recordSegment() {
+        console.log("Recording next segment...");
         // Create a separate recorder for ongoing segment recording
         // This lets us send in the few milliseconds of audio before VAD starts, preserving onset consonants, and allows for the server to provide ongoing transcription
         const segmentRecorder = new MediaRecorder(stream, { mimeType });
         segmentRecorder.ondataavailable = async (event) => {
+          console.log("Segment data available:", event.data.size);
           // console.log("Segment recording available", event.data.size);
           if (event.data && event.data.size > 0) {
             lastSegment = await event.data.arrayBuffer();
             // Send the ongoing segment to the parent component
-            if (isVoiceDetected.value) {
+            // if (isVoiceDetected.value)
+            {
               props.onSegment({
                 type: "SEGMENT",
                 data: arrayBufferToBase64(lastSegment),
@@ -153,14 +156,6 @@ function setupMicrophone(
     if (!mediaStream) {
       console.error("Media stream is not available.");
       return;
-    }
-
-    // Send the last segment of "silence" to capture initial consonants
-    if (lastSegment) {
-      props.onSegment({
-        type: "SEGMENT",
-        data: arrayBufferToBase64(lastSegment),
-      });
     }
 
     mediaRecorder = new MediaRecorder(mediaStream, { mimeType });

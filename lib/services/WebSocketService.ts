@@ -1,16 +1,32 @@
 import { base64ToArrayBuffer } from "../buffer_transformations.ts";
-import { AudioProcessingService } from "./AudioProcessingService.ts";
 import {
     type ClientSession,
     ClientSessionService,
 } from "./ClientSessionService.ts";
 import { type ControlMessage, UtilityService } from "./UtilityService.ts";
+import ContinuousTranscription from "./ContinuousTranscription.ts";
+import { computeDiff } from "../diff_utils.ts"; // Import diff utility function
 
 export class WebSocketService {
     static setupWebSocketHandlers(
         socket: WebSocket,
         sessions: Map<WebSocket, ClientSession>,
     ) {
+        // Add a handler to clean up when the WebSocket closes
+        socket.addEventListener("close", () => {
+            sessions.delete(socket); // Remove the session when the socket closes
+            console.log("WebSocket closed and session removed.");
+        });
+
+        // Example timeout to remove inactive sessions after 10 minutes
+        setTimeout(() => {
+            if (sessions.has(socket)) {
+                sessions.delete(socket);
+                console.log("Session timed out and removed.");
+                socket.close(); // Close the socket if it's still open
+            }
+        }, 10 * 60 * 1000); // 10 minutes
+
         socket.onopen = () => this.handleWebSocketOpen(socket, sessions);
         socket.onmessage = (event) =>
             this.handleWebSocketMessage(socket, event.data, sessions);
@@ -25,7 +41,28 @@ export class WebSocketService {
         sessions: Map<WebSocket, ClientSession>,
     ) {
         console.log("WebSocket connection opened");
-        sessions.set(socket, ClientSessionService.createClientSession());
+        const clientSession = ClientSessionService.createClientSession();
+        sessions.set(socket, clientSession);
+
+        // Initialize ContinuousTranscription instance for the session
+        clientSession.transcriptionService = new ContinuousTranscription(
+            async (finalTranscription) => {
+                this.sendMessage(
+                    socket,
+                    "FINAL_TRANSCRIPTION",
+                    finalTranscription,
+                );
+            },
+            (prediction) => {
+                // Compute the diff between stable and current prediction
+                const diff = computeDiff(
+                    clientSession.transcriptionService?.stableTranscription ||
+                        "",
+                    prediction,
+                );
+                this.sendMessage(socket, "PREDICTION_UPDATE", diff);
+            },
+        );
     }
 
     static handleWebSocketMessage(
@@ -37,9 +74,9 @@ export class WebSocketService {
         if (!session) return;
 
         try {
-            const controlMessage = JSON.parse(message);
+            const controlMessage: ControlMessage = JSON.parse(message);
             if (!UtilityService.isValidControlMessage(controlMessage)) {
-                console.log("Invalid control message:", message);
+                // Ignore this message wasn't meant for us
                 return;
             }
             this.processAudioMessage(socket, session, controlMessage);
@@ -51,6 +88,28 @@ export class WebSocketService {
                 "Error processing control message",
             );
         }
+    }
+
+    static handleAudioData(
+        socket: WebSocket,
+        session: ClientSession,
+        controlMessage: ControlMessage,
+    ) {
+        console.log(`Received ${controlMessage.type.toLowerCase()} data`);
+        if (!controlMessage.data) {
+            console.log("No data in message");
+            return;
+        }
+
+        // Convert the base64 data to Uint8Array
+        const segment = new Uint8Array(
+            base64ToArrayBuffer(controlMessage.data),
+        );
+
+        // Push the segment to the transcription service
+        session.transcriptionService?.push(segment).catch((error) => {
+            console.error("Error pushing audio segment:", error);
+        });
     }
 
     static handleWebSocketClose(
@@ -77,7 +136,6 @@ export class WebSocketService {
         data: string,
         additionalData?: Record<string, unknown>,
     ) {
-        // UtilityService.throttle(() => {
         const message = { type, data, ...additionalData };
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify(message));
@@ -87,7 +145,6 @@ export class WebSocketService {
                 message,
             );
         }
-        // }, 200);
     }
 
     static processAudioMessage(
@@ -101,9 +158,14 @@ export class WebSocketService {
                 break;
             case "VAD_STOP":
                 ClientSessionService.stopVAD(session);
+                session.transcriptionService?.finalize().catch((error) => {
+                    console.error("Error finalizing transcription:", error);
+                });
+                break;
+
+            case "UTTERANCE":
                 break;
             case "SEGMENT":
-            case "UTTERANCE":
                 this.handleAudioData(socket, session, controlMessage);
                 break;
             default:
@@ -113,42 +175,6 @@ export class WebSocketService {
                 );
         }
     }
-
-    static handleAudioData(
-        socket: WebSocket,
-        session: ClientSession,
-        controlMessage: ControlMessage,
-    ) {
-        console.log(`Received ${controlMessage.type.toLowerCase()} data`);
-        if (!controlMessage.data) {
-            console.log("No data in message");
-            return;
-        }
-
-        // Save the segment data
-        const data = base64ToArrayBuffer(controlMessage.data);
-        session.segments.push(data);
-        console.log(
-            "Segment data saved. Total segments:",
-            session.segments.length,
-        );
-
-        // Check if enough segments have been accumulated
-        if (session.segments.length >= 1) { // Example threshold, adjust as needed
-            const accumulatedSegments = session.segments.slice();
-            session.segments = []; // Clear the segment queue after accumulating
-
-            // Abort the previous transcription process if it exists
-            ClientSessionService.abortPreviousTranscription(session);
-
-            // Start processing the accumulated segments
-            AudioProcessingService.processAudio(
-                socket,
-                session,
-                accumulatedSegments.length,
-                accumulatedSegments,
-                controlMessage.type === "SEGMENT",
-            );
-        }
-    }
 }
+
+export default WebSocketService;

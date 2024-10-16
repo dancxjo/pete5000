@@ -1,17 +1,21 @@
+import ContinuousTranscription from "./ContinuousTranscription.ts";
+
 export interface ClientSession {
     abortController: AbortController;
-    segments: ArrayBuffer[];
+    isProcessing?: boolean;
+    batchingTimeout: number | null;
     isRecording: boolean;
     lastActivity: number;
     fullTranscription?: string;
     latestSegmentEmitted?: number;
     processedSegments: number;
+    transcriptionService?: ContinuousTranscription;
 }
 
 export class ClientSessionService {
     static createClientSession(): ClientSession {
         return {
-            segments: [],
+            batchingTimeout: null,
             isRecording: false,
             lastActivity: Date.now(),
             abortController: new AbortController(),
@@ -21,13 +25,14 @@ export class ClientSessionService {
 
     static startVAD(session: ClientSession) {
         session.isRecording = true;
-        session.segments = [];
         console.log("VAD_START received");
     }
 
     static stopVAD(session: ClientSession) {
         session.isRecording = false;
-        session.segments = [];
+        session.transcriptionService?.finalize().catch((error) => {
+            console.error("Error finalizing transcription:", error);
+        });
         console.log("VAD_STOP received");
     }
 
@@ -38,3 +43,5 @@ export class ClientSessionService {
         session.abortController = new AbortController();
     }
 }
+
+export default ClientSessionService;

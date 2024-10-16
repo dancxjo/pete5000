@@ -7,25 +7,22 @@ export class TranscriptionService {
         socket: WebSocket,
         session: ClientSession,
         transcription: string,
-        segments: { text: string; start: number; end: number }[],
+        _segments: { text: string; start: number; end: number }[],
         isPartial: boolean,
-        segmentId: number,
     ) {
         if (isPartial) {
             WebSocketService.sendMessage(
                 socket,
-                "PRELIMINARY_TRANSCRIPTION",
+                "PREDICTION_UPDATE",
                 transcription,
-                { basedOn: segmentId },
             );
-            this.handleFinalTranscription(socket, session, segments);
         } else {
             session.fullTranscription = `${
                 session.fullTranscription ?? ""
             } ${transcription}`.trim();
             WebSocketService.sendMessage(
                 socket,
-                "TRANSCRIPTION",
+                "FINAL_TRANSCRIPTION",
                 transcription,
             );
         }
@@ -44,12 +41,13 @@ export class TranscriptionService {
                 session.fullTranscription ?? ""
             } ${finalTranscription}`.trim();
             session.processedSegments += 1;
-            session.segments = session.segments.slice(1);
             WebSocketService.sendMessage(
                 socket,
-                "PRELIMINARY_TRANSCRIPTION",
+                "FINAL_TRANSCRIPTION",
                 finalTranscription,
             );
         }
     }
 }
+
+export default TranscriptionService;

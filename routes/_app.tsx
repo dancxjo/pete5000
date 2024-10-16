@@ -1,7 +1,4 @@
 import { type PageProps } from "$fresh/server.ts";
-import { IS_BROWSER } from "$fresh/runtime.ts";
-import { effect } from "@preact/signals";
-import { initializeWebSocket } from "../islands/ws/signals.ts";
 
 export default function App({ Component }: PageProps) {
   return (

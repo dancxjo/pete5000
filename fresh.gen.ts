@@ -4,9 +4,12 @@
 
 import * as $_404 from "./routes/_404.tsx";
 import * as $_app from "./routes/_app.tsx";
+import * as $api_Segment from "./routes/api/Segment.ts";
+import * as $api_asr from "./routes/api/asr.ts";
 import * as $api_chat from "./routes/api/chat.ts";
 import * as $index from "./routes/index.tsx";
 import * as $ChatSession from "./islands/ChatSession.tsx";
+import * as $Transcription from "./islands/Transcription.tsx";
 import * as $audio_SpeechInput from "./islands/audio/SpeechInput.tsx";
 import * as $audio_signals from "./islands/audio/signals.ts";
 import * as $ws_signals from "./islands/ws/signals.ts";
@@ -16,11 +19,14 @@ const manifest = {
   routes: {
     "./routes/_404.tsx": $_404,
     "./routes/_app.tsx": $_app,
+    "./routes/api/Segment.ts": $api_Segment,
+    "./routes/api/asr.ts": $api_asr,
     "./routes/api/chat.ts": $api_chat,
     "./routes/index.tsx": $index,
   },
   islands: {
     "./islands/ChatSession.tsx": $ChatSession,
+    "./islands/Transcription.tsx": $Transcription,
     "./islands/audio/SpeechInput.tsx": $audio_SpeechInput,
     "./islands/audio/signals.ts": $audio_signals,
     "./islands/ws/signals.ts": $ws_signals,

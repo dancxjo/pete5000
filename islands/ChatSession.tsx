@@ -1,7 +1,7 @@
 import SpeechInput, { type SegmentMessage } from "./audio/SpeechInput.tsx";
 import { initializeWebSocket, ws } from "./ws/signals.ts";
-import { useEffect, useState } from "preact/hooks";
-import { useSignal } from "@preact/signals";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { IS_BROWSER } from "$fresh/runtime.ts";
 
 export default function ChatSession() {
     const [connectionStatus, setConnectionStatus] = useState("Connecting...");
@@ -10,19 +10,22 @@ export default function ChatSession() {
         readyState: 0,
         protocols: "",
     });
+    const [transcription, setTranscription] = useState("");
+    const transcriptionRef = useRef("");
+    const [diffs, setDiffs] = useState([]);
 
-    const pretranscription = useSignal("");
-    const transcription = useSignal("");
-
-    let lastTranscriptionBasedOn = 0;
-
-    // Initialize the WebSocket connection
-    useEffect(() => {
+    if (IS_BROWSER) {
         initializeWebSocket();
+    }
 
-        // When ws signal changes, update the status and info
+    let wasConnected = false;
+
+    useEffect(() => {
         if (ws.value) {
-            // Set the WebSocket info when it opens
+            if (wasConnected) {
+                return;
+            }
+            wasConnected = true;
             ws.value.onopen = () => {
                 setConnectionStatus("Connected");
                 setSocketInfo({
@@ -31,70 +34,71 @@ export default function ChatSession() {
                     protocols: ws.value?.protocol ?? "",
                 });
             };
-
-            // Set an error handler
             ws.value.onerror = (error) => {
                 setConnectionStatus("Error");
                 console.error("WebSocket error:", error);
             };
-
-            // Handle WebSocket closure
             ws.value.onclose = (event) => {
                 setConnectionStatus("Disconnected");
                 console.log("WebSocket closed:", event);
             };
-
-            // Log data if any messages are received
-            ws.value.onmessage = (mensaje) => {
-                console.log("WebSocket message received:", mensaje.data);
+            ws.value.onmessage = (event) => {
                 try {
-                    const message = JSON.parse(mensaje.data);
-                    if (
-                        !message || typeof message !== "object" ||
-                        !("type" in message)
-                    ) {
-                        console.error("Invalid WebSocket message:", message);
-                        return;
-                    }
-
-                    if (message.type === "TRANSCRIPTION") {
-                        transcription.value = `${
-                            transcription ?? ""
-                        } ${message.data}`
-                            .trim();
-                        // Reset the last transcription for the next transaction
-                        lastTranscriptionBasedOn = 0;
-                        pretranscription.value = "";
-                    } else {
-                        console.log("Received message:", message);
-                        const basedOn = message.basedOn ?? 0;
-                        if (basedOn > lastTranscriptionBasedOn) {
-                            pretranscription.value = message.data;
-                            lastTranscriptionBasedOn = basedOn;
-                        } else {
-                            console.log(
-                                "Ignoring message based on old transcription:",
-                                message,
-                            );
-                        }
-                    }
-                } catch (error) {
-                    console.error("Error parsing WebSocket message:", {
-                        error,
-                        data: mensaje.data,
-                    });
+                    const message = JSON.parse(event.data);
+                    handleWebSocketMessage(message);
+                } catch (err) {
+                    console.error("Error parsing WebSocket message:", err);
                 }
             };
+        } else {
+            wasConnected = false;
+            setConnectionStatus("Disconnected");
         }
     }, []);
 
-    if (!ws.value) {
-        return (
-            <div>
-                <p>{connectionStatus}</p>
-            </div>
-        );
-    }
+    const handleWebSocketMessage = (message) => {
+        switch (message.type) {
+            case "FINAL_TRANSCRIPTION":
+                setTranscription(message.data);
+                setDiffs([]); // Clear diffs when a final transcription is received
+                break;
+            case "PREDICTION_UPDATE":
+                updateTranscriptionWithDiff(message.data);
+                break;
+            case "ERROR":
+                console.error("WebSocket error message:", message.data);
+                break;
+            default:
+                console.warn(
+                    "Unknown message type received from WebSocket:",
+                    message.type,
+                );
+        }
+    };
+
+    const updateTranscriptionWithDiff = (diffData) => {
+        setDiffs(diffData); // Store the diffs received from the server
+        applyDiffsToTranscription(diffData);
+    };
+
+    const applyDiffsToTranscription = (diffData) => {
+        let updatedTranscription = transcriptionRef.current;
+        diffData.forEach((diff) => {
+            if (diff.added) {
+                updatedTranscription +=
+                    `<span class='added diff-animation'>${diff.value}</span>`;
+            } else if (diff.removed) {
+                updatedTranscription = updatedTranscription.replace(
+                    diff.value,
+                    `<span class='removed diff-animation'>${diff.value}</span>`,
+                );
+            } else {
+                updatedTranscription += diff.value;
+            }
+        });
+        setTranscription(updatedTranscription);
+        transcriptionRef.current = updatedTranscription;
+    };
 
     const handleSegment = (message: SegmentMessage) => {
         if (!ws.value) return;
@@ -103,7 +107,7 @@ export default function ChatSession() {
 
     return (
         <div>
-            <details>
+            <details open={true}>
                 <summary>{connectionStatus}</summary>
                 <ul>
                     <li>
@@ -120,12 +124,14 @@ export default function ChatSession() {
                 </ul>
             </details>
             <SpeechInput onSegment={handleSegment} />
-            <p>
-                {pretranscription.value}
-            </p>
-            <p>
-                <strong>{transcription.value}</strong>
-            </p>
+            <div className="transcription-container">
+                <h3>Live Transcription</h3>
+                <div
+                    className="transcription"
+                    dangerouslySetInnerHTML={{ __html: transcription }}
+                >
+                </div>
+            </div>
         </div>
     );
 }
