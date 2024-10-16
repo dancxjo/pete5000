@@ -166,10 +166,10 @@ function setupMicrophone(
         console.log({ event });
         // Send the complete utterance to the parent component
         const buffer = await event.data.arrayBuffer();
-        props.onSegment({
-          type: "UTTERANCE",
-          data: arrayBufferToBase64(buffer),
-        });
+        // props.onSegment({
+        //   type: "UTTERANCE",
+        //   data: arrayBufferToBase64(buffer),
+        // });
       }
     };
 

@@ -90,6 +90,27 @@ export class AudioProcessingService {
         return stdout;
     }
 
+    /// This doesn't seem to work correctly.
+    static async combineWavDataManual(
+        wavData: Uint8Array,
+        nextWavData: Uint8Array,
+    ): Promise<Uint8Array> {
+        const oldHeader = AudioProcessingService.getWavHeader(wavData);
+        const oldPcm = AudioProcessingService.extractPcm(wavData);
+        const newPcm = AudioProcessingService.extractPcm(nextWavData);
+        const totalPcmSize = oldPcm.length + newPcm.length;
+        const newHeader = AudioProcessingService.updateWavHeader(
+            oldHeader,
+            totalPcmSize,
+        );
+        const combinedWavData = new Uint8Array(newHeader.length + totalPcmSize);
+        combinedWavData.set(newHeader);
+        combinedWavData.set(oldPcm, newHeader.length);
+        combinedWavData.set(newPcm, newHeader.length + oldPcm.length);
+        return combinedWavData;
+    }
+
+    // This would be faster if we didn´t have to write to disk
     static async combineWavData(
         wavData: Uint8Array,
         nextWavData: Uint8Array,

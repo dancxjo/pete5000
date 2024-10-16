@@ -16,8 +16,7 @@ export default function TranscriptionIsland() {
                 const message = JSON.parse(messageEvent.data);
                 if (message.type === "FINAL_TRANSCRIPTION") {
                     // Finalized part of the transcription
-                    transcription.value =
-                        `${transcription.value} ${message.data}`.trim();
+                    transcription.value = `${message.data}`.trim();
                     // Clear the prediction and redacted predictions
                     pretranscription.value = "";
                     redactedPredictions.value = [];

@@ -11,6 +11,7 @@ export default function ChatSession() {
         protocols: "",
     });
     const [transcription, setTranscription] = useState("");
+    const [mermaidTree, setMermaidTree] = useState("");
     const transcriptionRef = useRef("");
     const [diffs, setDiffs] = useState([]);
 
@@ -57,10 +58,13 @@ export default function ChatSession() {
     }, []);
 
     const handleWebSocketMessage = (message) => {
-        switch (message.type) {
+        switch (message.type.toUpperCase()) {
             case "FINAL_TRANSCRIPTION":
                 setTranscription(message.data);
                 setDiffs([]); // Clear diffs when a final transcription is received
+                break;
+            case "TREE":
+                setMermaidTree(message.data);
                 break;
             case "PREDICTION_UPDATE":
                 updateTranscriptionWithDiff(message.data);
@@ -126,11 +130,9 @@ export default function ChatSession() {
             <SpeechInput onSegment={handleSegment} />
             <div className="transcription-container">
                 <h3>Live Transcription</h3>
-                <div
-                    className="transcription"
-                    dangerouslySetInnerHTML={{ __html: transcription }}
-                >
-                </div>
+                <pre className="transcription">{transcription}
+                </pre>
+                <pre className="mermaid-tree">{mermaidTree}</pre>
             </div>
         </div>
     );

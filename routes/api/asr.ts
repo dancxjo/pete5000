@@ -3,11 +3,12 @@
 import { Handlers } from "$fresh/server.ts";
 import { ws } from "../../islands/ws/signals.ts";
 import { AudioProcessingService } from "../../lib/services/AudioProcessingService.ts";
-import { Segment } from "./Segment.ts"; // Import the refactored Segment class
+import { generateMermaidTree, Segment } from "./Segment.ts"; // Import the refactored Segment class
 
 interface Conversation {
     head: Segment;
-    tail: Segment;
+    queue: Segment[];
+    lastTranscription?: string;
 }
 
 const sessions = new Map<WebSocket, Conversation>();
@@ -27,22 +28,6 @@ let counter = Date.now();
 export const handler: Handlers = {
     async GET(req, _ctx) {
         const { socket, response } = Deno.upgradeWebSocket(req);
-
-        function alwaysBeTranscribing(segment: Segment) {
-            const transcribe = async () => {
-                console.log("Transcribing segment...");
-                const transcription = await segment.transcribe();
-                socket.send(
-                    JSON.stringify({
-                        type: "FINAL_TRANSCRIPTION",
-                        data: transcription,
-                    }),
-                );
-                console.log("Active transcription complete:", transcription);
-                setTimeout(transcribe, 600);
-            };
-            transcribe();
-        }
 
         // Handle WebSocket closure
         socket.onclose = () => {
@@ -80,8 +65,7 @@ export const handler: Handlers = {
                 );
 
                 if (!sessions.has(socket)) {
-                    sessions.set(socket, { head: segment, tail: segment });
-                    alwaysBeTranscribing(segment);
+                    sessions.set(socket, { head: segment, queue: [segment] });
                 }
                 const conversation = sessions.get(socket);
 
@@ -90,9 +74,38 @@ export const handler: Handlers = {
                     return;
                 }
 
-                conversation.tail.next = segment;
-                conversation.tail = segment;
-                console.log(conversation.head.length);
+                // Add the new segment to the queue
+                conversation.queue.push(segment);
+
+                // Process the queue to update the binary tree
+                const left = conversation.head;
+                const right = segment;
+                const newWavData = await AudioProcessingService.combineWavData(
+                    left.wavData,
+                    right.wavData,
+                );
+                // Deno.writeFileSync(`./output-${counter++}.wav`, newWavData);
+                const newRoot = new Segment(
+                    newWavData,
+                    new Date(),
+                );
+                newRoot.left = left;
+                newRoot.right = right;
+                conversation.head = newRoot;
+
+                // Transcribe the latest version of the tree
+                conversation.lastTranscription = await conversation.head
+                    .transcribe(conversation.lastTranscription);
+                socket.send(
+                    JSON.stringify({
+                        type: "FINAL_TRANSCRIPTION",
+                        data: conversation.lastTranscription,
+                    }),
+                );
+                const mermaidTree = generateMermaidTree(newRoot);
+                socket.send(
+                    JSON.stringify({ type: "tree", data: mermaidTree }),
+                );
             } catch (err) {
                 console.error("Error handling WebSocket message:", err);
                 // Optionally, send an error message back to the client
