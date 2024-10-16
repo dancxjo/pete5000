@@ -148,7 +148,10 @@ export class AudioProcessingService {
 
             // Read the combined output WAV file
             const combinedWavData = await Deno.readFile(outputFile);
-
+            await Deno.copyFile(
+                outputFile,
+                `./audio-segments/combined_${counter++}.wav`,
+            );
             // Return the combined WAV data as Uint8Array
             return combinedWavData;
         } finally {

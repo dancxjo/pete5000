@@ -19,7 +19,7 @@ export class Segment {
         return new Segment(wavData, timestamp ?? new Date());
     }
 
-    constructor(readonly wavData: Uint8Array, protected timestamp: Date) {
+    constructor(readonly wavData: Uint8Array, readonly timestamp: Date) {
     }
 
     async transcribe(initialPrompt: string = ""): Promise<string> {

@@ -9,6 +9,7 @@ interface Conversation {
     head: Segment;
     queue: Segment[];
     lastTranscription?: string;
+    coveredSegments?: Set<Segment>;
 }
 
 const sessions = new Map<WebSocket, Conversation>();
@@ -74,35 +75,61 @@ export const handler: Handlers = {
                     return;
                 }
 
-                // Add the new segment to the queue
+                if (!conversation.head) {
+                    conversation.head = segment;
+                } else if (!conversation.head.left) {
+                    conversation.head.left = segment;
+                } else if (!conversation.head.right) {
+                    conversation.head.right = segment;
+                } else {
+                    // Combine the WAV data from the head and the new segment
+                    const newWavData = await AudioProcessingService
+                        .combineWavData(
+                            conversation.head.wavData,
+                            segment.wavData,
+                        );
+                    // Create a new segment representing the combined data
+                    const newHead = new Segment(
+                        newWavData,
+                        conversation.head.timestamp,
+                    );
+                    newHead.left = conversation.head;
+                    newHead.right = segment;
+                    conversation.head = newHead;
+                }
+
+                // Update the conversation queue
                 conversation.queue.push(segment);
 
-                // Process the queue to update the binary tree
-                const left = conversation.head;
-                const right = segment;
-                const newWavData = await AudioProcessingService.combineWavData(
-                    left.wavData,
-                    right.wavData,
-                );
-                // Deno.writeFileSync(`./output-${counter++}.wav`, newWavData);
-                const newRoot = new Segment(
-                    newWavData,
-                    new Date(),
-                );
-                newRoot.left = left;
-                newRoot.right = right;
-                conversation.head = newRoot;
+                while (conversation.queue.length > 0) {
+                    const current = conversation.queue[0]; // Peek at the front of the queue
 
-                // Transcribe the latest version of the tree
+                    if (!current.left) {
+                        current.left = segment;
+                        conversation.queue.push(segment);
+                        break;
+                    } else if (!current.right) {
+                        current.right = segment;
+                        conversation.queue.push(segment);
+                        break;
+                    } else {
+                        conversation.queue.shift(); // Remove the current node if both children are occupied
+                    }
+                }
+
+                // Update the transcription from the new head of the tree
                 conversation.lastTranscription = await conversation.head
                     .transcribe(conversation.lastTranscription);
+
                 socket.send(
                     JSON.stringify({
                         type: "FINAL_TRANSCRIPTION",
                         data: conversation.lastTranscription,
                     }),
                 );
-                const mermaidTree = generateMermaidTree(newRoot);
+
+                // Generate and send the Mermaid representation of the tree
+                const mermaidTree = generateMermaidTree(conversation.head);
                 socket.send(
                     JSON.stringify({ type: "tree", data: mermaidTree }),
                 );
@@ -121,3 +148,26 @@ export const handler: Handlers = {
         return response;
     },
 };
+
+export function addSegmentBalanced(
+    segment: Segment,
+    conversation: Conversation,
+) {
+    while (conversation.queue.length > 0) {
+        const current = conversation.queue[0]; // Peek at the front of the queue
+
+        if (!current.left) {
+            current.left = segment;
+            conversation.queue.push(segment);
+            break;
+        } else if (!current.right) {
+            current.right = segment;
+            conversation.queue.push(segment);
+            break;
+        } else {
+            conversation.queue.shift(); // Remove the current node if both children are occupied
+        }
+    }
+
+    conversation.head = conversation.queue[0]; // Update head if necessary
+}
