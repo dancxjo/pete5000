@@ -1,34 +1,37 @@
 import { type Signal, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { arrayBufferToBase64 } from "../../lib/buffer_transformations.ts";
+import { type FragmentMessage, MessageType } from "../../lib/sockets.ts";
+import { pino } from "npm:pino";
 
-export interface SegmentMessage {
-  type:
-    | "VAD_START"
-    | "VAD_STOP"
-    | "UTTERANCE"
-    | "SEGMENT"
-    | "PREDICTION_UPDATE"
-    | "FINAL_TRANSCRIPTION"
-    | "ERROR";
-  data?: string;
-}
+const logger = pino({ level: "info", browser: { asObject: true } });
 
 interface SpeechInputProps {
-  onSegment: (message: SegmentMessage) => void;
+  // This will not be awaited
+  onFragment: (message: FragmentMessage) => void | Promise<void>;
 }
 
 export default function SpeechInput(props: SpeechInputProps) {
   const isListening = useSignal(false);
-  const isVoiceDetected = useSignal(false);
+
+  const startListening = () => {
+    logger.info("Starting microphone...");
+    setupMicrophone(props, isListening);
+  };
+
+  const stopListening = () => () => {
+    logger.info("Stopping microphone...");
+  };
 
   useEffect(() => {
-    let cleanupFunc = () => {};
+    let cleanup = () => {};
     if (isListening.value) {
-      cleanupFunc = setupMicrophone(props, isVoiceDetected, isListening);
-    }
-    return cleanupFunc;
-  }, [isListening.value]);
+      cleanup = startListening() ?? cleanup;
+    } else cleanup = stopListening();
+    return cleanup;
+  }, [
+    isListening.value,
+  ]);
 
   return (
     <div>
@@ -40,25 +43,20 @@ export default function SpeechInput(props: SpeechInputProps) {
             isListening.value = !isListening.value;
           }}
         />
-        Is listening?
-      </label>
-      <label>
-        <input type="checkbox" checked={isVoiceDetected.value} disabled />
-        Voice detected?
+        Listen
       </label>
     </div>
   );
 }
 
+type Callback = () => void;
+
 function setupMicrophone(
   props: SpeechInputProps,
-  isVoiceDetected: Signal<boolean>,
   isListening: Signal<boolean>,
 ) {
-  let mediaRecorder: MediaRecorder | null = null;
   let mediaStream: MediaStream | null = null;
   let audioContext: AudioContext | null = null;
-  let vadNode: AudioWorkletNode | null = null;
   let mediaStreamSource: MediaStreamAudioSourceNode | null = null;
 
   // Initialize the mimeType
@@ -74,76 +72,35 @@ function setupMicrophone(
     return () => {};
   }
 
-  let lastSegment: ArrayBuffer | null = null;
-
-  // Setup voice activity detection & record ongoing segments of audio
   navigator.mediaDevices
     .getUserMedia({ audio: true })
-    .then(async (stream) => {
-      mediaStream = stream;
+    .then((stream) => {
+      const segmentRecorder = new MediaRecorder(stream, { mimeType });
 
+      mediaStream = stream;
       audioContext = new AudioContext();
 
-      // Load VAD AudioWorklet
-      await audioContext.audioWorklet.addModule("/vad-audio-worklet.js");
-
-      vadNode = new AudioWorkletNode(audioContext, "vad", {
-        processorOptions: {
-          sampleRate: audioContext.sampleRate,
-          fftSize: 512,
-        },
-      });
-
-      mediaStreamSource = audioContext.createMediaStreamSource(stream);
-      mediaStreamSource.connect(vadNode);
-
-      // Handle VAD messages
-      vadNode.port.onmessage = (event) => {
-        const cmd = event.data["cmd"];
-        if (cmd === "speech") {
-          isVoiceDetected.value = true;
-          if (!mediaRecorder || mediaRecorder.state === "inactive") {
-            startRecording();
-            // Notify the parent component that VAD has started
-            props.onSegment({ type: "VAD_START" });
-          }
-        } else if (cmd === "noise" || cmd === "silence") {
-          isVoiceDetected.value = false;
-          if (mediaRecorder && mediaRecorder.state === "recording") {
-            stopRecording();
-            // Notify the parent component that VAD has stopped
-            props.onSegment({ type: "VAD_STOP" });
-          }
-        }
-      };
-
-      function recordSegment() {
-        console.log("Recording next segment...");
-        // Create a separate recorder for ongoing segment recording
-        // This lets us send in the few milliseconds of audio before VAD starts, preserving onset consonants, and allows for the server to provide ongoing transcription
-        const segmentRecorder = new MediaRecorder(stream, { mimeType });
+      const recordSegment = () => {
+        logger.info("Recording next segment...");
         segmentRecorder.ondataavailable = async (event) => {
           console.log("Segment data available:", event.data.size);
           // console.log("Segment recording available", event.data.size);
           if (event.data && event.data.size > 0) {
-            lastSegment = await event.data.arrayBuffer();
-            // Send the ongoing segment to the parent component
-            // if (isVoiceDetected.value)
-            {
-              props.onSegment({
-                type: "SEGMENT",
-                data: arrayBufferToBase64(lastSegment),
-              });
-            }
+            const segData = await event.data.arrayBuffer();
+            props.onFragment({
+              type: MessageType.FRAGMENT,
+              data: arrayBufferToBase64(segData),
+              recordedAt: new Date().toISOString(),
+            });
           }
         };
-        setTimeout(() => {
-          segmentRecorder.stop();
-          recordSegment();
-        }, 500);
-        if (segmentRecorder.state === "inactive" && isListening.value) {
-          segmentRecorder.start();
-        }
+      };
+      setTimeout(() => {
+        segmentRecorder.stop();
+        recordSegment();
+      }, 500);
+      if (segmentRecorder.state === "inactive" && isListening.value) {
+        segmentRecorder.start();
       }
 
       recordSegment();
@@ -152,43 +109,7 @@ function setupMicrophone(
       console.error("Error accessing microphone:", error);
     });
 
-  function startRecording() {
-    if (!mediaStream) {
-      console.error("Media stream is not available.");
-      return;
-    }
-
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType });
-
-    mediaRecorder.ondataavailable = async (event) => {
-      console.log("Data available:", event.data.size);
-      if (event.data && event.data.size > 0) {
-        console.log({ event });
-        // Send the complete utterance to the parent component
-        const buffer = await event.data.arrayBuffer();
-        // props.onSegment({
-        //   type: "UTTERANCE",
-        //   data: arrayBufferToBase64(buffer),
-        // });
-      }
-    };
-
-    mediaRecorder.start();
-  }
-
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-    }
-  }
-
   function cleanup() {
-    stopRecording();
-    if (vadNode) {
-      vadNode.disconnect();
-      vadNode.port.close();
-      vadNode = null;
-    }
     if (mediaStreamSource) {
       mediaStreamSource.disconnect();
       mediaStreamSource = null;

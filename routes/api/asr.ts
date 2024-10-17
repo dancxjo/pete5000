@@ -37,12 +37,6 @@ function setupWebSocket(socket: WebSocket) {
             const now = sessions.get(socket)?.transcript.visualize();
             if (now !== was) {
                 was = now ?? "";
-                socket.send(
-                    JSON.stringify({
-                        type: "TREE",
-                        data: was,
-                    }),
-                );
             }
             sessions.get(socket)?.transcript.contract();
         });

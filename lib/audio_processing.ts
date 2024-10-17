@@ -2,7 +2,7 @@ import decodeAudio from "npm:audio-decode";
 import audioBufferToWav from "npm:audiobuffer-to-wav";
 import { AudioContext } from "npm:web-audio-api";
 import { v4 as uuidv4 } from "npm:uuid";
-import { join as pathJoin } from "https://deno.land/std@0.117.0/path/mod.ts";
+import { join as pathJoin } from "jsr:@std/path";
 
 /** Clips a segment of audio from an audiobuffer from a given index to an end index */
 export function clip(
