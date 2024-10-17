@@ -1,64 +1,79 @@
 import { AudioProcessingService } from "../../lib/services/AudioProcessingService.ts";
 
-interface Transcription {
-    transcription: string;
-    segments: {
-        text: string;
-        start: number;
-        end: number;
-    }[];
-}
-
 export class Segment {
-    public left: Segment | null = null;
-    public right: Segment | null = null;
-    readonly transcriptions: { [transcription: string]: Transcription[] } = {};
-
-    static async fromWebm(webmData: Uint8Array, timestamp?: Date) {
-        const wavData = await AudioProcessingService.convertWebmToWav(webmData);
-        return new Segment(wavData, timestamp ?? new Date());
+    static counter = Date.now();
+    static async fromWebm(
+        webmData: Uint8Array,
+        recordedAt: Date,
+    ): Promise<Segment> {
+        const buffer = await AudioProcessingService.decodeWebm(webmData);
+        return new Segment(buffer, recordedAt);
     }
 
-    constructor(readonly wavData: Uint8Array, readonly timestamp: Date) {
+    protected next: Segment | null = null;
+
+    constructor(
+        readonly buffer: AudioBuffer,
+        readonly recordedAt: Date,
+    ) {}
+
+    get duration(): number {
+        // if (!this.next) {
+        return this.buffer.duration;
+        // }
+        // if (this === this.next) {
+        //     throw new Error("Circular reference detected in segment chain.");
+        // }
+        // return this.buffer.duration + this.next.duration;
     }
 
-    async transcribe(initialPrompt: string = ""): Promise<string> {
-        console.log("Transcribing segment...");
-        const transcription = await AudioProcessingService
-            .getWhisperTranscription(this.wavData, initialPrompt);
-        const transcribedText = transcription.transcription;
+    get audioBuffer(): AudioBuffer {
+        // if (!this.next) {
+        return this.buffer;
+        // }
+        // if (this === this.next) {
+        //     throw new Error("Circular reference detected in segment chain.");
+        // }
+        // const context = new AudioContext();
+        // const outputBuffer = context.createBuffer(
+        //     1,
+        //     this.buffer.length + this.next.buffer.length,
+        //     this.buffer.sampleRate,
+        // );
+        // const outputData = outputBuffer.getChannelData(0);
+        // const buffer1Data = this.buffer.getChannelData(0);
+        // const buffer2Data = this.next.buffer.getChannelData(0);
+        // outputData.set(buffer1Data);
+        // outputData.set(buffer2Data, this.buffer.length);
+        // return outputBuffer;
+    }
 
-        if (!this.transcriptions[transcription.transcription]) {
-            this.transcriptions[transcribedText] = [];
+    get tail(): Segment {
+        if (!this.next) {
+            return this;
         }
-        this.transcriptions[transcribedText].push(transcription);
-        return transcribedText;
-    }
-}
-
-export function generateMermaidTree(
-    node: Segment,
-    nodeId = "A",
-    result = [],
-): string {
-    if (!node) return "";
-
-    const transcription = node.transcriptions
-        ? `"${Object.keys(node.transcriptions)[0]}"`
-        : '"[No transcription]"';
-    result.push(`${nodeId}["${transcription}"]`);
-
-    if (node.left) {
-        const leftId = `${nodeId}L`;
-        result.push(`${nodeId} --> ${leftId}`);
-        generateMermaidTree(node.left, leftId, result);
+        if (this === this.next) {
+            throw new Error("Circular reference detected in segment chain.");
+        }
+        return this.next;
     }
 
-    if (node.right) {
-        const rightId = `${nodeId}R`;
-        result.push(`${nodeId} --> ${rightId}`);
-        generateMermaidTree(node.right, rightId, result);
+    push(segment: Segment): void {
+        if (this.next) {
+            this.next.push(segment);
+        } else {
+            this.next = segment;
+        }
     }
 
-    return `graph TD\n${result.join("\n")}`;
+    get toBeWavData(): Promise<Uint8Array> {
+        return AudioProcessingService.toWav(this.audioBuffer);
+    }
+
+    async writeWav(): Promise<void> {
+        Deno.writeFileSync(
+            `./audio-segments/audio-${Segment.counter++}.wav`,
+            await this.toBeWavData,
+        );
+    }
 }

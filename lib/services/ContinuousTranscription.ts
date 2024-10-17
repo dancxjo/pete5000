@@ -40,7 +40,7 @@ class ContinuousTranscription {
      */
     async push(segment: Uint8Array): Promise<void> {
         try {
-            const wavData = await AudioProcessingService.convertWebmToWav(
+            const wavData = await AudioProcessingService.decodeWebm(
                 segment.buffer,
             );
             const header = wavData.slice(0, 44);

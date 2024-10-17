@@ -69,6 +69,9 @@ export default function ChatSession() {
             case "PREDICTION_UPDATE":
                 updateTranscriptionWithDiff(message.data);
                 break;
+            case "NEW_PREDICTION":
+                setTranscription(message.data);
+                break;
             case "ERROR":
                 console.error("WebSocket error message:", message.data);
                 break;
@@ -130,8 +133,7 @@ export default function ChatSession() {
             <SpeechInput onSegment={handleSegment} />
             <div className="transcription-container">
                 <h3>Live Transcription</h3>
-                <pre className="transcription">{transcription}
-                </pre>
+                <p className="transcription">{transcription}</p>
                 <pre className="mermaid-tree">{mermaidTree}</pre>
             </div>
         </div>

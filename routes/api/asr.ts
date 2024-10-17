@@ -1,173 +1,176 @@
-// WebSocketHandler.ts
-
 import { Handlers } from "$fresh/server.ts";
-import { ws } from "../../islands/ws/signals.ts";
-import { AudioProcessingService } from "../../lib/services/AudioProcessingService.ts";
-import { generateMermaidTree, Segment } from "./Segment.ts"; // Import the refactored Segment class
+import { Transcript } from "../../lib/Transcript.ts";
+import { pino } from "npm:pino";
+
+const logger = pino({ level: "debug" });
 
 interface Conversation {
-    head: Segment;
-    queue: Segment[];
-    lastTranscription?: string;
-    coveredSegments?: Set<Segment>;
+    transcript: Transcript;
 }
 
 const sessions = new Map<WebSocket, Conversation>();
 
-interface SegmentMessage {
-    type: "SEGMENT";
+interface FragmentMessage {
+    type: "FRAGMENT" | "SEGMENT";
     data: string; // base64-encoded Webm data
     timestamp?: string; // ISO 8601
-}
-
-function isValidControlMessage(message: SegmentMessage): boolean {
-    return message.type === "SEGMENT" && typeof message.data === "string";
 }
 
 let counter = Date.now();
 
 export const handler: Handlers = {
     async GET(req, _ctx) {
+        logger.info("Received GET request to upgrade to WebSocket");
         const { socket, response } = Deno.upgradeWebSocket(req);
 
-        // Handle WebSocket closure
-        socket.onclose = () => {
-            sessions.delete(socket);
-            console.log("WebSocket connection closed.");
-        };
-
-        // Handle WebSocket errors
-        socket.onerror = (err) => {
-            console.error("WebSocket error:", err);
-            sessions.delete(socket);
-        };
-
-        // Handle incoming WebSocket messages
-        socket.onmessage = async (event) => {
-            try {
-                const data = event.data;
-                const message: SegmentMessage = JSON.parse(data);
-
-                // Validate the incoming message
-                if (!isValidControlMessage(message)) {
-                    return;
-                }
-
-                // Decode the base64-encoded WebM data into a Uint8Array
-                const decodedData = Uint8Array.from(
-                    atob(message.data),
-                    (c) => c.charCodeAt(0),
-                );
-
-                // Create a new Segment instance
-                const segment = await Segment.fromWebm(
-                    decodedData,
-                    new Date(message.timestamp ?? Date.now()),
-                );
-
-                if (!sessions.has(socket)) {
-                    sessions.set(socket, { head: segment, queue: [segment] });
-                }
-                const conversation = sessions.get(socket);
-
-                if (!conversation) {
-                    console.error("No conversation found for the WebSocket.");
-                    return;
-                }
-
-                if (!conversation.head) {
-                    conversation.head = segment;
-                } else if (!conversation.head.left) {
-                    conversation.head.left = segment;
-                } else if (!conversation.head.right) {
-                    conversation.head.right = segment;
-                } else {
-                    // Combine the WAV data from the head and the new segment
-                    const newWavData = await AudioProcessingService
-                        .combineWavData(
-                            conversation.head.wavData,
-                            segment.wavData,
-                        );
-                    // Create a new segment representing the combined data
-                    const newHead = new Segment(
-                        newWavData,
-                        conversation.head.timestamp,
-                    );
-                    newHead.left = conversation.head;
-                    newHead.right = segment;
-                    conversation.head = newHead;
-                }
-
-                // Update the conversation queue
-                conversation.queue.push(segment);
-
-                while (conversation.queue.length > 0) {
-                    const current = conversation.queue[0]; // Peek at the front of the queue
-
-                    if (!current.left) {
-                        current.left = segment;
-                        conversation.queue.push(segment);
-                        break;
-                    } else if (!current.right) {
-                        current.right = segment;
-                        conversation.queue.push(segment);
-                        break;
-                    } else {
-                        conversation.queue.shift(); // Remove the current node if both children are occupied
-                    }
-                }
-
-                // Update the transcription from the new head of the tree
-                conversation.lastTranscription = await conversation.head
-                    .transcribe(conversation.lastTranscription);
-
-                socket.send(
-                    JSON.stringify({
-                        type: "FINAL_TRANSCRIPTION",
-                        data: conversation.lastTranscription,
-                    }),
-                );
-
-                // Generate and send the Mermaid representation of the tree
-                const mermaidTree = generateMermaidTree(conversation.head);
-                socket.send(
-                    JSON.stringify({ type: "tree", data: mermaidTree }),
-                );
-            } catch (err) {
-                console.error("Error handling WebSocket message:", err);
-                // Optionally, send an error message back to the client
-                socket.send(
-                    JSON.stringify({
-                        type: "ERROR",
-                        message: "Failed to process the audio segment.",
-                    }),
-                );
-            }
-        };
+        setupWebSocket(socket);
 
         return response;
     },
 };
 
-export function addSegmentBalanced(
-    segment: Segment,
-    conversation: Conversation,
-) {
-    while (conversation.queue.length > 0) {
-        const current = conversation.queue[0]; // Peek at the front of the queue
+function setupWebSocket(socket: WebSocket) {
+    logger.debug("Setting up WebSocket");
+    socket.onopen = () => {
+        let was = "";
+        setInterval(() => {
+            const now = sessions.get(socket)?.transcript.visualize();
+            if (now !== was) {
+                was = now ?? "";
+                socket.send(
+                    JSON.stringify({
+                        type: "TREE",
+                        data: was,
+                    }),
+                );
+            }
+            sessions.get(socket)?.transcript.contract();
+        });
+    };
+    socket.onclose = () => handleWebSocketClose(socket);
+    socket.onerror = (err) => handleWebSocketError(socket, err);
+    socket.onmessage = (event) => handleWebSocketMessage(socket, event);
+}
 
-        if (!current.left) {
-            current.left = segment;
-            conversation.queue.push(segment);
-            break;
-        } else if (!current.right) {
-            current.right = segment;
-            conversation.queue.push(segment);
-            break;
-        } else {
-            conversation.queue.shift(); // Remove the current node if both children are occupied
+function handleWebSocketClose(socket: WebSocket) {
+    logger.info("WebSocket connection closed");
+    sessions.delete(socket);
+}
+
+function handleWebSocketError(socket: WebSocket, err: Event) {
+    logger.error({ err }, "WebSocket error occurred");
+    sessions.delete(socket);
+}
+
+async function handleWebSocketMessage(socket: WebSocket, event: MessageEvent) {
+    logger.debug("Received WebSocket message");
+    try {
+        const message = parseFragmentMessage(event.data);
+        if (!message) {
+            logger.warn("Invalid message format received");
+            return;
         }
+
+        logger.info("Valid fragment message received");
+        const decodedData = decodeBase64WebMData(message.data);
+        logger.debug("Decoded base64 WebM data");
+
+        addFragmentToConversation(socket, decodedData);
+    } catch (err) {
+        logger.error({ err }, "Error handling WebSocket message");
+        sendErrorMessage(socket, "Failed to process the audio fragment.");
+    }
+}
+
+function parseFragmentMessage(data: string): FragmentMessage | null {
+    try {
+        const message: FragmentMessage = JSON.parse(data);
+        if (isValidControlMessage(message)) {
+            return message;
+        } else {
+            logger.warn("Received message is not a valid control message");
+            return null;
+        }
+    } catch (err) {
+        logger.error({ err }, "Failed to parse fragment message");
+        return null;
+    }
+}
+
+function isValidControlMessage(message: unknown): message is FragmentMessage {
+    return !!message && typeof message === "object" && "type" in message &&
+        (message.type === "FRAGMENT" || message.type === "SEGMENT") &&
+        "data" in message && typeof message.data === "string";
+}
+
+function decodeBase64WebMData(data: string): Uint8Array {
+    logger.debug("Decoding base64 WebM data");
+    return Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+}
+
+function addFragmentToConversation(socket: WebSocket, webmData: Uint8Array) {
+    logger.info("Adding fragment to conversation transcript");
+    if (!sessions.has(socket)) {
+        logger.info("Creating new conversation for WebSocket");
+        const transcript = new Transcript({
+            onError: (err) => {
+                logger.error({ err }, "Transcript error occurred");
+                sendErrorMessage(socket, err.message);
+            },
+            onNewPrediction: (prediction) => {
+                logger.debug(
+                    prediction,
+                    "Sending new prediction to client",
+                );
+                socket.send(
+                    JSON.stringify({
+                        type: "NEW_PREDICTION",
+                        data: prediction.text,
+                    }),
+                );
+            },
+            onStableFragment: (fragment) => {
+                logger.debug(
+                    "Sending stable fragment transcription to client",
+                );
+                socket.send(
+                    JSON.stringify({
+                        type: "TRANSCRIPTION",
+                        data: fragment,
+                    }),
+                );
+            },
+        });
+
+        sessions.set(socket, { transcript });
+    }
+    const conversation = sessions.get(socket);
+
+    if (!conversation) {
+        logger.error("No conversation found for the WebSocket");
+        return;
     }
 
-    conversation.head = conversation.queue[0]; // Update head if necessary
+    logger.debug("Adding fragment to conversation transcript");
+    conversation.transcript.pushWebm(webmData, new Date()).then(() => {
+        logger.info("Fragment added to conversation");
+        // conversation.transcript.transcribe().then((transcription) => {
+        //     logger.info({ transcription }, "Conversation transcribed");
+        // }).catch((err) => {
+        //     logger.error({ err }, "Failed to transcribe conversation");
+        // });
+    }).catch((err) => {
+        logger.error({ err }, "Failed to add fragment to conversation");
+        sendErrorMessage(socket, err.message);
+    });
+}
+
+function sendErrorMessage(socket: WebSocket, message: string) {
+    logger.warn({ message }, "Sending error message to client");
+    socket.send(
+        JSON.stringify({
+            type: "ERROR",
+            message,
+        }),
+    );
 }
