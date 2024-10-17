@@ -37,7 +37,6 @@ export class Transcript {
         this.cursor?.transcribe(this.backwardsBuffer);
         return new Promise((resolve) =>
             this.cursor?.awaitAllTranscriptions().then(() => {
-                this.cursor?.writeOut();
                 const transcription = this.cursor?.getTranscription();
                 logger.debug("Transcription complete.", { transcription });
                 resolve(transcription?.text ?? "");
