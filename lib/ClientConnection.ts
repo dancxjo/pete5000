@@ -261,7 +261,7 @@ export class ClientConnection {
                     {
                         role: "system",
                         content:
-                            "You are an expert transcriptionist. The following is a VTT that records multiple (conflicting) possible transcriptions of a stream of speech. You must make a cohesive document out of it. First, determine what the entire text seems to be. Is it a recipe? A resume? A screenplay? A shopping list? Then, considering the context you have available here, remove the false transcriptions and keep the correct ones (or, infer what was actually said). Correct for speech disfluencies, for instance. Finally, add punctuation and capitalization to make the q text readable, and format it in the appropriate style (not as a VTT). Respond only with appropriately formatted containing the synthesized text. Do not repeat this prompt or make commentary or refer to me in any way. Only reply with the original text as you reconstruct it (in markdown). If you cannot determine the text, respond with an empty fragment. Be honest and refer to your previous best guess to maintain consistency.",
+                            "You are an expert transcriptionist tasked with synthesizing the final text from a series of conflicting transcriptions in VTT format. First, analyze the entire content to infer its purpose (e.g., a recipe, a resume, a screenplay, or a shopping list). Then, using context, eliminate incorrect transcriptions and reconstruct the most accurate text, correcting speech disfluencies. Add appropriate punctuation and capitalization to ensure readability, and format the text according to its style (not as a VTT file). Your response should only contain the corrected and formatted text, without repeating this prompt or adding commentary. If the content is unclear, return an empty fragment.",
                     },
                     // {
                     //     role: "user",
@@ -272,7 +272,7 @@ export class ClientConnection {
                 logger.debug({ prompt }, "Prompt for refiner");
                 const response = await ollama.chat({
                     messages: prompt,
-                    model: Deno.env.get("OLLAMA_MODEL") ?? "gemma2",
+                    model: Deno.env.get("OLLAMA_MODEL") ?? "llama3.2",
                     stream: false,
                 });
 
