@@ -43,24 +43,7 @@ export class ClientConnection {
 
     protected transcribedSegments: Map<Date, TranscribedSegment[]> = new Map();
 
-    // Our best estimation of all the fragments we have received
-    get bestGuess(): string {
-        // Reduce transcribed segments to a single best-guess string
-        const sortedSegments = [...this.transcribedSegments.entries()]
-            .sort(([aTime], [bTime]) => aTime.getTime() - bTime.getTime())
-            .map(([when, segments]) => {
-                // Sort segments by avg_logprob to select the best one
-                segments.sort((a, b) => b.avg_logprob - a.avg_logprob);
-                return segments[0];
-            });
-
-        let text = sortedSegments.reduce((acc, segment) => {
-            return acc + segment.text + " ";
-        }, "");
-
-        logger.debug({ text }, "Best guess transcription");
-        return text.trim();
-    }
+    protected bestGuess: string = "";
 
     // Generate VTT file listing all possible transcriptions for each segment
     generateVTT(): string {
@@ -244,7 +227,7 @@ export class ClientConnection {
                 const wav = await toWav(chunk);
                 const proposedTranscription = await getTranscription(
                     wav,
-                    // this.bestGuess,
+                    this.bestGuess,
                 );
                 const segments = proposedTranscription.segments;
                 segments.forEach((segment) => {
@@ -278,8 +261,12 @@ export class ClientConnection {
                     {
                         role: "system",
                         content:
-                            "You are an expert transcriptionist. The following is a VTT that records multiple (conflicting) possible transcriptions of a stream of speech. First, determine what the entire text seems to be. Is it a recipe? A resume? A screenplay? A shopping list? Remove the false transcriptions and keep the correct ones. Then, correct any errors in the text. Finally, add punctuation and capitalization to make the text readable, and format it in the appropriate style (not as a VTT). Respond only with  an appropriately formatted HTML fragment containing the corrected text, no commentary.",
+                            "You are an expert transcriptionist. The following is a VTT that records multiple (conflicting) possible transcriptions of a stream of speech. You must make a cohesive document out of it. First, determine what the entire text seems to be. Is it a recipe? A resume? A screenplay? A shopping list? Then, considering the context you have available here, remove the false transcriptions and keep the correct ones (or, infer what was actually said). Correct for speech disfluencies, for instance. Finally, add punctuation and capitalization to make the q text readable, and format it in the appropriate style (not as a VTT). Respond only with appropriately formatted containing the synthesized text. Do not repeat this prompt or make commentary or refer to me in any way. Only reply with the original text as you reconstruct it (in markdown). If you cannot determine the text, respond with an empty fragment. Be honest and refer to your previous best guess to maintain consistency.",
                     },
+                    // {
+                    //     role: "user",
+                    //     content: `Your last best guess was: ${this.bestGuess}`,
+                    // },
                     { role: "user", content: chunk },
                 ];
                 logger.debug({ prompt }, "Prompt for refiner");
@@ -288,12 +275,11 @@ export class ClientConnection {
                     model: Deno.env.get("OLLAMA_MODEL") ?? "gemma2",
                     stream: false,
                 });
-                controller.enqueue(
-                    response.message.content.replace("```html", "").replace(
-                        "```",
-                        "",
-                    ),
-                );
+
+                const proposed = response.message.content.replace("```", "");
+
+                this.bestGuess = proposed.trim() ?? chunk;
+                controller.enqueue(this.bestGuess);
             },
             flush: (_controller) => {
                 logger.debug("Finished processing assistant response");
@@ -301,26 +287,39 @@ export class ClientConnection {
         });
 
         logger.debug("Setting up pipeline for fragment processing");
-        b.pipeThrough(fragmentMessageFilter)
-            .pipeThrough(fragmentTranscoder)
+        const transcodedFragments = b.pipeThrough(fragmentMessageFilter)
+            .pipeThrough(fragmentTranscoder);
+
+        const refinedTranscription = transcodedFragments
             .pipeThrough(segmentAccumulator)
             .pipeThrough(transcriber)
-            .pipeThrough(refiner)
-            .pipeTo(
-                new WritableStream({
-                    write: (chunk) => {
-                        logger.debug({ chunk }, "Transcribed chunk");
-                        this.socket.send(
-                            JSON.stringify({
-                                type: MessageType.PROPOSAL,
-                                data: chunk,
-                            }),
-                        );
-                    },
-                }),
-            )
+            .pipeThrough(refiner);
+
+        refinedTranscription.pipeTo(
+            new WritableStream({
+                write: (chunk) => {
+                    logger.debug("Writing refined chunk to output");
+                    this.socket.send(JSON.stringify({
+                        type: MessageType.PROPOSAL,
+                        data: chunk,
+                    }));
+                },
+                close: () => {
+                    logger.info("Refined transcription pipeline closed");
+                },
+                abort: (err) => {
+                    logger.error(
+                        { err },
+                        "Error in refined transcription pipeline",
+                    );
+                },
+            }),
+        )
             .catch((err) => {
-                logger.error({ err }, "Error in processing stream pipeline");
+                logger.error(
+                    { err },
+                    "Error in processing stream pipeline",
+                );
             }).finally(() => {
                 logger.info("Fragment processing pipeline completed");
             });

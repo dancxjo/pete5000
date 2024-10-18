@@ -78,14 +78,7 @@ export class ServerConnection {
                 this.send(message);
                 break;
             }
-            case MessageType.ERROR: {
-                logger.error(message, "WebSocket error message");
-                break;
-            }
-            case MessageType.DEBUG: {
-                logger.debug(message, "WebSocket debug message");
-                break;
-            }
+
             default: {
                 logger.warn(
                     message.type,
