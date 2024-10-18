@@ -10,7 +10,11 @@ import {
 import { IS_BROWSER } from "$fresh/runtime.ts";
 import { pino } from "npm:pino";
 import { Message, Ollama } from "npm:ollama";
-import { getTranscription } from "./whisper.ts";
+import {
+    getTranscription,
+    type TranscribedSegment,
+    type Transcription,
+} from "./whisper.ts";
 
 export const logger = pino({
     level: "debug",
@@ -31,6 +35,53 @@ export class ClientConnection {
         | ReadableStreamDefaultController<SocketMessage>
         | null = null;
     protected chatHistory: Message[] = [];
+    protected transcriptions: {
+        recordedAt: Date;
+        transcript: Transcription;
+    }[] = [];
+    protected anchor: Date = new Date();
+
+    protected transcribedSegments: Map<Date, TranscribedSegment[]> = new Map();
+
+    // Our best estimation of all the fragments we have received
+    get bestGuess(): string {
+        // Reduce transcribed segments to a single best-guess string
+        const sortedSegments = [...this.transcribedSegments.entries()]
+            .sort(([aTime], [bTime]) => aTime.getTime() - bTime.getTime())
+            .map(([when, segments]) => {
+                // Sort segments by avg_logprob to select the best one
+                segments.sort((a, b) => b.avg_logprob - a.avg_logprob);
+                return segments[0];
+            });
+
+        let text = sortedSegments.reduce((acc, segment) => {
+            return acc + segment.text + " ";
+        }, "");
+
+        logger.debug({ text }, "Best guess transcription");
+        return text.trim();
+    }
+
+    // Generate VTT file listing all possible transcriptions for each segment
+    generateVTT(): string {
+        let vttContent = "WEBVTT\n\n";
+        [...this.transcribedSegments.entries()].forEach(
+            ([timestamp, segments]) => {
+                const start = new Date(timestamp).toISOString().substr(11, 12)
+                    .replace(".", ",");
+                const end = new Date(
+                    timestamp.getTime() +
+                        (segments[0].end - segments[0].start) * 1000,
+                ).toISOString().substr(11, 12).replace(".", ",");
+                segments.forEach((segment, index) => {
+                    vttContent += `${start} --> ${end}\n(${
+                        index + 1
+                    }) ${segment.text}\n\n`;
+                });
+            },
+        );
+        return vttContent;
+    }
 
     constructor(protected socket: WebSocket) {
         logger.debug("Initializing ClientConnection");
@@ -54,7 +105,10 @@ export class ClientConnection {
         this.messageStream = a;
         logger.debug("Message stream split into two branches");
 
-        const fragmentMessageFilter = new TransformStream({
+        const fragmentMessageFilter = new TransformStream<
+            SocketMessage,
+            FragmentMessage
+        >({
             transform: (chunk, controller) => {
                 logger.debug("Filtering fragment messages");
                 if (isValidFragmentMessage(chunk)) {
@@ -66,11 +120,17 @@ export class ClientConnection {
             },
         });
 
-        const fragmentTranscoder = new TransformStream({
+        const fragmentTranscoder = new TransformStream<
+            FragmentMessage,
+            { recordedAt: Date; audioBuffer: AudioBuffer }
+        >({
             transform: async (chunk, controller) => {
                 logger.debug("Transcoding fragment message");
                 const fragment = chunk as FragmentMessage;
                 try {
+                    if (new Date(chunk.recordedAt) < this.anchor) {
+                        this.anchor = new Date(chunk.recordedAt);
+                    }
                     const audioBuffer = await decodeWebm(
                         decodeWebmString(fragment.data),
                     );
@@ -95,126 +155,69 @@ export class ClientConnection {
             },
         });
 
-        const segmentAccumulator = new TransformStream({
-            start: (controller) => {
-                logger.debug(
-                    "Starting segment accumulation (silence detector)",
-                );
-                this.audioBuffer = null;
-            },
-            transform: async (chunk, controller) => {
-                logger.debug("Detecting silence in audio segments");
-                const fragment = chunk as {
-                    audioBuffer: AudioBuffer;
-                    recordedAt: Date;
-                };
-                logger.debug(
-                    {
-                        fragmentBufferLength: fragment.audioBuffer.length,
-                        recordedAt: fragment.recordedAt,
-                    },
-                    "Fragment audio buffer length and recordedAt during silence detection",
-                );
-                try {
-                    if (!this.audioBuffer) {
-                        logger.debug("Setting initial audio buffer");
-                        this.audioBuffer = fragment.audioBuffer;
-                    } else {
-                        logger.debug("Joining audio buffers");
-                        const newBuffer = await join(
-                            this.audioBuffer,
-                            fragment.audioBuffer,
-                        );
-                        this.audioBuffer = newBuffer;
-                        logger.debug(
-                            { newBufferLength: newBuffer.length },
-                            "New audio buffer length after joining",
-                        );
-                    }
-
-                    // Implement silence detection logic
-                    const silenceThreshold = 0.75; // Arbitrary threshold for silence detection
-                    let isSilent = true;
-                    for (let i = 0; i < this.audioBuffer.length; i++) {
-                        if (
-                            Math.abs(this.audioBuffer.getChannelData(0)[i]) >
-                                silenceThreshold
-                        ) {
-                            isSilent = false;
-                            break;
-                        }
-                    }
-
-                    if (isSilent) {
-                        logger.debug(
-                            "Detected silence in audio buffer, enqueuing",
-                        );
-                        controller.enqueue(this.audioBuffer);
-                        this.audioBuffer = null;
-                    }
-                } catch (err) {
-                    logger.error(
-                        { err, fragment },
-                        "Error during silence detection",
-                    );
-                }
-            },
-            flush: (controller) => {
-                logger.debug("Flushing accumulated audio segments");
-                if (this.audioBuffer) {
-                    logger.debug(
-                        { finalBufferLength: this.audioBuffer.length },
-                        "Final audio buffer length before flush",
-                    );
-                    controller.enqueue(this.audioBuffer);
-                }
-            },
-        });
-
-        // TODO: Feed back the segments identified by whisper
-        const segmentAccumulator1 = new TransformStream({
-            start: (controller) => {
+        // Transform stream to accumulate segments until they are ready to be transcribed
+        const segmentAccumulator = new TransformStream<
+            { recordedAt: Date; audioBuffer: AudioBuffer },
+            AudioBuffer
+        >({
+            start: () => {
                 logger.debug("Starting segment accumulation");
                 this.audioBuffer = null;
             },
             transform: async (chunk, controller) => {
-                logger.debug("Accumulating audio segments");
                 const fragment = chunk as {
                     audioBuffer: AudioBuffer;
                     recordedAt: Date;
                 };
-                logger.debug(
-                    {
-                        fragmentBufferLength: fragment.audioBuffer.length,
-                        recordedAt: fragment.recordedAt,
-                    },
-                    "Fragment audio buffer length and recordedAt during accumulation",
-                );
                 try {
-                    if (!this.audioBuffer) {
-                        logger.debug("Setting initial audio buffer");
-                        this.audioBuffer = fragment.audioBuffer;
-                    } else {
-                        logger.debug("Joining audio buffers");
-                        const newBuffer = await join(
-                            this.audioBuffer,
-                            fragment.audioBuffer,
+                    this.audioBuffer = this.audioBuffer
+                        ? await join(this.audioBuffer, fragment.audioBuffer)
+                        : fragment.audioBuffer;
+
+                    const deservesSnipping = (buffer: AudioBuffer): boolean => {
+                        const length = buffer.length;
+                        return length >= buffer.sampleRate * 10 ||
+                            length <= buffer.sampleRate * 0.5;
+                    };
+
+                    const hasBeenConfidentlyDescribed = (
+                        start: Date,
+                        end: Date,
+                    ): boolean => {
+                        return this.transcriptions.some(
+                            ({ recordedAt, transcript }) => {
+                                const totalLength = transcript.segments.reduce(
+                                    (acc, seg) => acc + seg.end - seg.start,
+                                    0,
+                                );
+                                const endAt = new Date(
+                                    recordedAt.getTime() + totalLength,
+                                );
+                                return recordedAt <= start && endAt >= end;
+                            },
                         );
-                        this.audioBuffer = newBuffer;
+                    };
+
+                    if (
+                        deservesSnipping(this.audioBuffer) ||
+                        hasBeenConfidentlyDescribed(
+                            fragment.recordedAt,
+                            new Date(),
+                        )
+                    ) {
                         logger.debug(
-                            { newBufferLength: newBuffer.length },
-                            "New audio buffer length after joining",
+                            "Audio buffer ready for transcription, enqueuing",
                         );
-                    }
-                    const longEnough = 3 * this.audioBuffer.sampleRate;
-                    logger.debug({
-                        currentBufferLength: this.audioBuffer.length,
-                        longEnoughThreshold: longEnough,
-                    }, "Checking if audio buffer is long enough to enqueue");
-                    if (this.audioBuffer.length > longEnough) {
-                        logger.debug("Audio buffer long enough, enqueuing");
                         controller.enqueue(this.audioBuffer);
-                        this.audioBuffer = null;
+                        if (
+                            this.audioBuffer.length >
+                                10 * this.audioBuffer.sampleRate
+                        ) {
+                            logger.warn(
+                                "Audio buffer is too long, clearing",
+                            );
+                            this.audioBuffer = null;
+                        }
                     }
                 } catch (err) {
                     logger.error(
@@ -224,136 +227,76 @@ export class ClientConnection {
                 }
             },
             flush: (controller) => {
-                logger.debug("Flushing accumulated audio segments");
                 if (this.audioBuffer) {
-                    logger.debug(
-                        { finalBufferLength: this.audioBuffer.length },
-                        "Final audio buffer length before flush",
-                    );
+                    logger.debug("Flushing final audio segment");
                     controller.enqueue(this.audioBuffer);
                 }
             },
         });
 
-        const transcriber = new TransformStream({
+        type LoadedVTT = string;
+        const transcriber = new TransformStream<AudioBuffer, LoadedVTT>({
             start: (_controller) => {
                 logger.debug("Starting transcriber");
             },
             transform: async (chunk, controller) => {
                 logger.debug("Transcribing audio segment");
                 const wav = await toWav(chunk);
-                // TODO: Feed back in the overall summary as the second parameter
-                const proposedTranscription = await getTranscription(wav);
-                const _segments = proposedTranscription.segments;
-                // TODO: Feed back the segments identified by whisper
-                const transcribedText = proposedTranscription.text;
-                controller.enqueue(transcribedText);
+                const proposedTranscription = await getTranscription(
+                    wav,
+                    // this.bestGuess,
+                );
+                const segments = proposedTranscription.segments;
+                segments.forEach((segment) => {
+                    const when = new Date(
+                        this.anchor.getTime() + segment.start,
+                    );
+                    this.transcribedSegments.set(
+                        when,
+                        this.transcribedSegments.get(when) ?? [],
+                    );
+                    this.transcribedSegments.get(when)?.push(segment);
+                });
+
+                controller.enqueue(this.generateVTT());
             },
             flush: (_controller) => {
                 logger.debug("Finished transcribing audio segments");
             },
         });
 
-        const assistant = new TransformStream({
+        type RefinedChunk = string;
+        const refiner = new TransformStream<LoadedVTT, RefinedChunk>({
             start: (_controller) => {
-                logger.debug("Starting assistant");
+                logger.debug("Starting refiner");
+                // Clear the last transcription
+                // _controller.enqueue("\u0004");
             },
             transform: async (chunk, controller) => {
-                logger.debug("Processing input through assistant");
-                this.chatHistory.push({
-                    role: "user",
-                    content: chunk,
-                });
+                logger.debug("Processing input through refiner");
                 const prompt: Message[] = [
                     {
                         role: "system",
                         content:
-                            "You are a helpful assistant, an ensemble of AI tools working together, not just a large language model. This is a conversation you are having on your web interface. The user is experiencing this conversation in real time with text to speech and speech to text.",
+                            "You are an expert transcriptionist. The following is a VTT that records multiple (conflicting) possible transcriptions of a stream of speech. First, determine what the entire text seems to be. Is it a recipe? A resume? A screenplay? A shopping list? Remove the false transcriptions and keep the correct ones. Then, correct any errors in the text. Finally, add punctuation and capitalization to make the text readable, and format it in the appropriate style (not as a VTT). Respond only with  an appropriately formatted HTML fragment containing the corrected text, no commentary.",
                     },
-                    ...this.chatHistory,
+                    { role: "user", content: chunk },
                 ];
-                const stream = await ollama.chat({
+                logger.debug({ prompt }, "Prompt for refiner");
+                const response = await ollama.chat({
                     messages: prompt,
-                    model: Deno.env.get("OLLAMA_MODEL") ?? "llama3.2",
-                    stream: true,
+                    model: Deno.env.get("OLLAMA_MODEL") ?? "gemma2",
+                    stream: false,
                 });
-                for await (const chunk of stream) {
-                    controller.enqueue(chunk.message.content);
-                }
+                controller.enqueue(
+                    response.message.content.replace("```html", "").replace(
+                        "```",
+                        "",
+                    ),
+                );
             },
             flush: (_controller) => {
                 logger.debug("Finished processing assistant response");
-            },
-        });
-
-        const sentenceParser = new TransformStream({
-            start: (controller) => {
-                logger.debug("Starting sentence parser");
-            },
-            transform: (chunk, controller) => {
-                logger.debug("Parsing assistant response into sentences");
-                // Placeholder logic for sentence parsing
-                const sentences = chunk.split(".").map((sentence) =>
-                    sentence.trim() + "."
-                );
-                sentences.forEach((sentence) => controller.enqueue(sentence));
-            },
-            flush: (controller) => {
-                logger.debug("Finished parsing sentences");
-            },
-        });
-
-        const responseFormatter = new TransformStream({
-            start: (controller) => {
-                logger.debug("Starting response formatter");
-            },
-            transform: (chunk, controller) => {
-                logger.debug("Formatting response for readability");
-                // Placeholder logic for response formatting
-                const formattedResponse = `[Formatted response: ${chunk}]`;
-                controller.enqueue(formattedResponse);
-            },
-            flush: (controller) => {
-                logger.debug("Finished formatting response");
-            },
-        });
-
-        const ttsSystem = new TransformStream({
-            start: (controller) => {
-                logger.debug("Starting TTS system");
-            },
-            transform: async (chunk, controller) => {
-                logger.debug("Converting response to speech");
-                // Placeholder logic for TTS conversion
-                const ttsAudio = `[TTS audio data for: ${chunk}]`;
-                controller.enqueue(ttsAudio);
-            },
-            flush: (controller) => {
-                logger.debug("Finished TTS conversion");
-            },
-        });
-
-        const sendToSocket = new WritableStream({
-            start: () => {
-                logger.debug("Starting send to socket");
-            },
-            write: (chunk) => {
-                logger.debug("Sending TTS audio data over WebSocket");
-                try {
-                    const mp3Audio = `[MP3 audio data for: ${chunk}]`; // Placeholder for MP3 audio data
-                    this.socket.send(mp3Audio);
-                    logger.info("MP3 audio data sent successfully");
-                } catch (err) {
-                    logger.error(
-                        { err, chunk },
-                        "Failed to send TTS audio data over WebSocket",
-                    );
-                }
-            },
-            close: () => {
-                logger.info(
-                    "Finished sending all TTS audio data over WebSocket",
-                );
             },
         });
 
@@ -362,6 +305,7 @@ export class ClientConnection {
             .pipeThrough(fragmentTranscoder)
             .pipeThrough(segmentAccumulator)
             .pipeThrough(transcriber)
+            .pipeThrough(refiner)
             .pipeTo(
                 new WritableStream({
                     write: (chunk) => {
@@ -375,11 +319,6 @@ export class ClientConnection {
                     },
                 }),
             )
-            // .pipeThrough(assistant)
-            // .pipeThrough(sentenceParser)
-            // .pipeThrough(responseFormatter)
-            // .pipeThrough(ttsSystem)
-            // .pipeTo(sendToSocket)
             .catch((err) => {
                 logger.error({ err }, "Error in processing stream pipeline");
             }).finally(() => {

@@ -27,13 +27,25 @@ export default function ChatSession() {
     useEffect(() => {
     }, []);
 
+    const growOrCutTranscription = (transcriptionChunk: string) => {
+        if (transcriptionChunk.includes("\u0004")) {
+            // We have a full transcription
+            return setTranscription("Cleared");
+        } else {
+            // We have a partial transcription
+            return setTranscription(
+                transcription + transcriptionChunk,
+            );
+        }
+    };
+
     useEffect(() => {
         if (ws.value) {
             server = new ServerConnection(
                 ws.value,
                 setSocketInfo,
                 setConnectionStatus,
-                setTranscription,
+                growOrCutTranscription,
             );
             serverRef.current = server;
         } else {
@@ -73,7 +85,10 @@ export default function ChatSession() {
             <SpeechInput onFragment={handleFragment} />
             <div className="transcription-container">
                 <h3>Live Transcription</h3>
-                <p className="transcription">{transcription}</p>
+                <p
+                    className="transcription"
+                    dangerouslySetInnerHTML={{ __html: transcription }}
+                />
             </div>
         </div>
     );
