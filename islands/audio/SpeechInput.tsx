@@ -1,10 +1,15 @@
-import { type Signal, useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { type Signal, signal, useSignal } from "@preact/signals";
+import { MutableRef, useEffect, useRef } from "preact/hooks";
 import { arrayBufferToBase64 } from "../../lib/buffer_transformations.ts";
-import { type FragmentMessage, MessageType } from "../../lib/sockets.ts";
+import {
+  type FragmentMessage,
+  MessageType,
+} from "../../lib/socket_messages.ts";
 import { pino } from "npm:pino";
 
 const logger = pino({ level: "info", browser: { asObject: true } });
+
+export const mediaStream = signal<MediaStream | null>(null);
 
 interface SpeechInputProps {
   // This will not be awaited
@@ -19,19 +24,13 @@ export default function SpeechInput(props: SpeechInputProps) {
     setupMicrophone(props, isListening);
   };
 
-  const stopListening = () => () => {
+  const stopListening = () => {
     logger.info("Stopping microphone...");
   };
 
   useEffect(() => {
-    let cleanup = () => {};
-    if (isListening.value) {
-      cleanup = startListening() ?? cleanup;
-    } else cleanup = stopListening();
-    return cleanup;
-  }, [
-    isListening.value,
-  ]);
+    handleListeningState(startListening, stopListening, isListening);
+  }, [isListening.value]);
 
   return (
     <div>
@@ -49,25 +48,29 @@ export default function SpeechInput(props: SpeechInputProps) {
   );
 }
 
-type Callback = () => void;
+function handleListeningState(
+  startListening: () => void,
+  stopListening: () => void,
+  isListening: Signal<boolean>,
+) {
+  let cleanup = () => {};
+  if (isListening.value) {
+    cleanup = startListening() ?? cleanup;
+  } else {
+    cleanup = stopListening;
+  }
+  return cleanup;
+}
 
 function setupMicrophone(
   props: SpeechInputProps,
   isListening: Signal<boolean>,
 ) {
-  let mediaStream: MediaStream | null = null;
   let audioContext: AudioContext | null = null;
   let mediaStreamSource: MediaStreamAudioSourceNode | null = null;
 
-  // Initialize the mimeType
-  let mimeType = "";
-  if (MediaRecorder.isTypeSupported("audio/webm; codecs=opus")) {
-    mimeType = "audio/webm; codecs=opus";
-  } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-    mimeType = "audio/webm";
-  } else if (MediaRecorder.isTypeSupported("audio/ogg; codecs=opus")) {
-    mimeType = "audio/ogg; codecs=opus";
-  } else {
+  const mimeType = determineMimeType();
+  if (!mimeType) {
     console.error("No supported MIME type found for MediaRecorder.");
     return () => {};
   }
@@ -75,55 +78,120 @@ function setupMicrophone(
   navigator.mediaDevices
     .getUserMedia({ audio: true })
     .then((stream) => {
-      const segmentRecorder = new MediaRecorder(stream, { mimeType });
-
-      mediaStream = stream;
-      audioContext = new AudioContext();
-
-      const recordSegment = () => {
-        logger.info("Recording next segment...");
-        segmentRecorder.ondataavailable = async (event) => {
-          console.log("Segment data available:", event.data.size);
-          // console.log("Segment recording available", event.data.size);
-          if (event.data && event.data.size > 0) {
-            const segData = await event.data.arrayBuffer();
-            props.onFragment({
-              type: MessageType.FRAGMENT,
-              data: arrayBufferToBase64(segData),
-              recordedAt: new Date().toISOString(),
-            });
-          }
-        };
-      };
-      setTimeout(() => {
-        segmentRecorder.stop();
-        recordSegment();
-      }, 500);
-      if (segmentRecorder.state === "inactive" && isListening.value) {
-        segmentRecorder.start();
-      }
-
-      recordSegment();
+      initializeMediaRecorder(
+        stream,
+        mimeType,
+        props,
+        isListening,
+      );
     })
     .catch((error) => {
       console.error("Error accessing microphone:", error);
     });
 
-  function cleanup() {
-    if (mediaStreamSource) {
-      mediaStreamSource.disconnect();
-      mediaStreamSource = null;
-    }
-    if (audioContext) {
-      audioContext.close();
-      audioContext = null;
-    }
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((track) => track.stop());
-      mediaStream = null;
-    }
-  }
+  return () => cleanupMicrophone(audioContext, mediaStreamSource);
+}
 
-  // Return cleanup function
-  return cleanup;
+function determineMimeType(): string | null {
+  if (MediaRecorder.isTypeSupported("audio/webm; codecs=opus")) {
+    return "audio/webm; codecs=opus";
+  } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+    return "audio/webm";
+  } else if (MediaRecorder.isTypeSupported("audio/ogg; codecs=opus")) {
+    return "audio/ogg; codecs=opus";
+  }
+  return null;
+}
+
+function initializeMediaRecorder(
+  stream: MediaStream,
+  mimeType: string,
+  props: SpeechInputProps,
+  isListening: Signal<boolean>,
+) {
+  const fragmentRecorder = new MediaRecorder(stream, { mimeType });
+  mediaStream.value = stream;
+  const audioContext = new AudioContext();
+
+  fragmentRecorder.onstart = () => {
+    logger.info("Fragment recorder started...");
+  };
+
+  fragmentRecorder.onstop = () => {
+    logger.info("Fragment recorder stopped. Starting next fragment...");
+    if (isListening.value) {
+      recordNextFragment(fragmentRecorder, isListening);
+    }
+  };
+
+  fragmentRecorder.ondataavailable = (event) => {
+    handleDataAvailable(event, props);
+  };
+
+  recordNextFragment(fragmentRecorder, isListening);
+}
+
+function handleDataAvailable(
+  event: BlobEvent,
+  props: SpeechInputProps,
+) {
+  logger.info("ondataavailable event fired");
+
+  if (event.data && event.data.size > 0) {
+    logger.trace("Fragment data available, size:", event.data.size);
+    processFragmentData(event.data, props);
+  } else {
+    logger.warn("No data available in ondataavailable");
+  }
+}
+
+async function processFragmentData(
+  data: Blob,
+  props: SpeechInputProps,
+) {
+  try {
+    const segData = await data.arrayBuffer();
+    logger.info("onFragment is being called");
+    await props.onFragment({
+      type: MessageType.FRAGMENT,
+      data: arrayBufferToBase64(segData),
+      recordedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Error during onFragment processing:", error);
+  }
+}
+
+function recordNextFragment(
+  fragmentRecorder: MediaRecorder,
+  isListening: Signal<boolean>,
+) {
+  if (fragmentRecorder.state === "inactive" && isListening.value) {
+    logger.info("Starting fragment recorder...");
+    fragmentRecorder.start();
+    setTimeout(() => {
+      if (fragmentRecorder.state === "recording") {
+        logger.info("Stopping fragment recorder...");
+        fragmentRecorder.stop();
+      }
+    }, 500); // Record for 500ms
+  }
+}
+
+function cleanupMicrophone(
+  audioContext: AudioContext | null,
+  mediaStreamSource: MediaStreamAudioSourceNode | null,
+) {
+  if (mediaStreamSource) {
+    mediaStreamSource.disconnect();
+    mediaStreamSource = null;
+  }
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
+  if (mediaStream.value) {
+    mediaStream.value.getTracks().forEach((track) => track.stop());
+    mediaStream.value = null;
+  }
 }
