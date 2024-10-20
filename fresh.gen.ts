@@ -5,7 +5,9 @@
 import * as $_404 from "./routes/_404.tsx";
 import * as $_app from "./routes/_app.tsx";
 import * as $api_asr from "./routes/api/asr.ts";
+import * as $api_stream from "./routes/api/stream.ts";
 import * as $index from "./routes/index.tsx";
+import * as $AsrTimeline from "./islands/AsrTimeline.tsx";
 import * as $ChatSession from "./islands/ChatSession.tsx";
 import * as $Transcription from "./islands/Transcription.tsx";
 import * as $audio_SpeechInput from "./islands/audio/SpeechInput.tsx";
@@ -17,9 +19,11 @@ const manifest = {
     "./routes/_404.tsx": $_404,
     "./routes/_app.tsx": $_app,
     "./routes/api/asr.ts": $api_asr,
+    "./routes/api/stream.ts": $api_stream,
     "./routes/index.tsx": $index,
   },
   islands: {
+    "./islands/AsrTimeline.tsx": $AsrTimeline,
     "./islands/ChatSession.tsx": $ChatSession,
     "./islands/Transcription.tsx": $Transcription,
     "./islands/audio/SpeechInput.tsx": $audio_SpeechInput,

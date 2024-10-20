@@ -17,3 +17,31 @@
        text-decoration: line-through;
      }
     
+.segment-text {
+    font-size: 1.1rem;
+    margin-bottom: 0.5rem;
+}
+.segment-tokens {
+    margin-bottom: 0.5rem;
+}
+.tokens-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+.token {
+    background-color: #f0f0f0;
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.9rem;
+}
+.segment-metadata {
+    font-size: 0.9rem;
+    color: #555;
+}
+.timeline-container {
+    margin-top: 2rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    height: 300px;
+}

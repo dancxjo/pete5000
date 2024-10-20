@@ -5,6 +5,8 @@ import { IS_BROWSER } from "$fresh/runtime.ts";
 import { type FragmentMessage } from "../lib/socket_messages.ts";
 import { ServerConnection } from "../lib/ServerConnection.ts";
 import { pino } from "npm:pino";
+import { ASRTimeline } from "./AsrTimeline.tsx";
+import { TranscribedSegment } from "../lib/whisper.ts";
 
 const logger = pino({ level: "info" });
 
@@ -16,6 +18,12 @@ export default function ChatSession() {
         protocols: "",
     });
     const [transcription, setTranscription] = useState("");
+    const [vtt, setVtt] = useState("");
+    const [segments, setSegments] = useState<TranscribedSegment[]>([]);
+
+    const addSegments = (newSegments: TranscribedSegment[]) => {
+        setSegments((oldSegments) => [...oldSegments, ...newSegments]);
+    };
 
     if (IS_BROWSER) {
         initializeWebSocket();
@@ -46,6 +54,8 @@ export default function ChatSession() {
                 setSocketInfo,
                 setConnectionStatus,
                 growOrCutTranscription,
+                setVtt,
+                addSegments,
             );
             serverRef.current = server;
         } else {
@@ -82,13 +92,17 @@ export default function ChatSession() {
                     </li>
                 </ul>
             </details>
-            <SpeechInput onFragment={handleFragment} />
+            <SpeechInput
+                onFragment={handleFragment}
+            />
             <div className="transcription-container">
                 <h3>Live Transcription</h3>
+                <textarea style="width:100%" value={vtt}></textarea>
                 <p
                     className="transcription"
                     dangerouslySetInnerHTML={{ __html: transcription }}
                 />
+                <ASRTimeline segments={segments} />
             </div>
         </div>
     );

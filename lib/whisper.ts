@@ -13,12 +13,62 @@ export interface TranscribedSegment {
     avg_logprob: number;
     compression_ratio: number;
     no_speech_prob: number;
+    batchRecordedAt?: string;
+}
+
+export function isValidTranscribedSegment(
+    data: unknown,
+): data is TranscribedSegment {
+    if (!data || typeof data !== "object") {
+        return false;
+    }
+
+    const requiredFields = [
+        "id",
+        "seek",
+        "start",
+        "end",
+        "text",
+        "tokens",
+        "temperature",
+        "avg_logprob",
+        "compression_ratio",
+        "no_speech_prob",
+    ];
+
+    for (const field of requiredFields) {
+        if (!(field in data)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 export interface Transcription {
     text: string;
     segments: TranscribedSegment[];
     language: string;
+}
+
+export function isValidTranscription(data: unknown): data is Transcription {
+    if (!data || typeof data !== "object") {
+        return false;
+    }
+    if (!("text" in data) || typeof data.text !== "string") {
+        return false;
+    }
+    if (!("segments" in data) || !Array.isArray(data.segments)) {
+        return false;
+    }
+    if (!("language" in data) || typeof data.language !== "string") {
+        return false;
+    }
+
+    if (data.segments.some((segment) => !isValidTranscribedSegment(segment))) {
+        return false;
+    }
+
+    return true;
 }
 
 export async function getTranscription(

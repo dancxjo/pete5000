@@ -141,7 +141,7 @@ export class ClientConnection {
         // Transform stream to accumulate segments until they are ready to be transcribed
         const segmentAccumulator = new TransformStream<
             { recordedAt: Date; audioBuffer: AudioBuffer },
-            AudioBuffer
+            { recordedAt: Date; audioBuffer: AudioBuffer }
         >({
             start: () => {
                 logger.debug("Starting segment accumulation");
@@ -152,15 +152,21 @@ export class ClientConnection {
                     audioBuffer: AudioBuffer;
                     recordedAt: Date;
                 };
+                let earliestRecordedAt = this.audioBuffer
+                    ? this.audioBuffer.recordedAt
+                    : fragment.recordedAt;
                 try {
                     this.audioBuffer = this.audioBuffer
                         ? await join(this.audioBuffer, fragment.audioBuffer)
                         : fragment.audioBuffer;
 
+                    if (fragment.recordedAt < earliestRecordedAt) {
+                        earliestRecordedAt = fragment.recordedAt;
+                    }
+
                     const deservesSnipping = (buffer: AudioBuffer): boolean => {
                         const length = buffer.length;
-                        return length >= buffer.sampleRate * 10 ||
-                            length <= buffer.sampleRate * 0.5;
+                        return length >= buffer.sampleRate * 10;
                     };
 
                     const hasBeenConfidentlyDescribed = (
@@ -191,16 +197,11 @@ export class ClientConnection {
                         logger.debug(
                             "Audio buffer ready for transcription, enqueuing",
                         );
-                        controller.enqueue(this.audioBuffer);
-                        if (
-                            this.audioBuffer.length >
-                                10 * this.audioBuffer.sampleRate
-                        ) {
-                            logger.warn(
-                                "Audio buffer is too long, clearing",
-                            );
-                            this.audioBuffer = null;
-                        }
+                        controller.enqueue({
+                            audioBuffer: this.audioBuffer,
+                            recordedAt: earliestRecordedAt,
+                        });
+                        this.audioBuffer = null; // Clear audio buffer to start accumulating next segment
                     }
                 } catch (err) {
                     logger.error(
@@ -212,36 +213,62 @@ export class ClientConnection {
             flush: (controller) => {
                 if (this.audioBuffer) {
                     logger.debug("Flushing final audio segment");
-                    controller.enqueue(this.audioBuffer);
+                    controller.enqueue({
+                        audioBuffer: this.audioBuffer,
+                        recordedAt: new Date(),
+                    });
+                    this.audioBuffer = null;
                 }
             },
         });
 
         type LoadedVTT = string;
-        const transcriber = new TransformStream<AudioBuffer, LoadedVTT>({
+        const transcriber = new TransformStream<
+            { audioBuffer: AudioBuffer; recordedAt: Date },
+            LoadedVTT
+        >({
             start: (_controller) => {
                 logger.debug("Starting transcriber");
             },
             transform: async (chunk, controller) => {
                 logger.debug("Transcribing audio segment");
-                const wav = await toWav(chunk);
+                const wav = await toWav(chunk.audioBuffer);
                 const proposedTranscription = await getTranscription(
                     wav,
-                    this.bestGuess,
+                    // this.bestGuess,
                 );
                 const segments = proposedTranscription.segments;
+                this.socket.send(JSON.stringify({
+                    type: MessageType.GUESS,
+                    data: proposedTranscription,
+                    recordedAt: chunk.recordedAt?.toISOString(),
+                }));
                 segments.forEach((segment) => {
                     const when = new Date(
-                        this.anchor.getTime() + segment.start,
+                        chunk.recordedAt.getTime() + segment.start * 1000,
                     );
+                    // Remove duplicates while keeping more granular versions
+                    if (false && this.transcribedSegments.has(when)) {
+                        this.transcribedSegments.set(
+                            when,
+                            this.transcribedSegments.get(when)?.filter(
+                                (existingSegment) =>
+                                    existingSegment.text !== segment.text,
+                            ) ?? [],
+                        );
+                    }
                     this.transcribedSegments.set(
                         when,
                         this.transcribedSegments.get(when) ?? [],
                     );
                     this.transcribedSegments.get(when)?.push(segment);
                 });
-
-                controller.enqueue(this.generateVTT());
+                const vtt = this.generateVTT();
+                controller.enqueue(vtt);
+                this.socket.send(JSON.stringify({
+                    type: MessageType.VTT,
+                    data: vtt,
+                }));
             },
             flush: (_controller) => {
                 logger.debug("Finished transcribing audio segments");
@@ -263,10 +290,6 @@ export class ClientConnection {
                         content:
                             "You are an expert transcriptionist tasked with synthesizing the final text from a series of conflicting transcriptions in VTT format. First, analyze the entire content to infer its purpose (e.g., a recipe, a resume, a screenplay, or a shopping list). Then, using context, eliminate incorrect transcriptions and reconstruct the most accurate text, correcting speech disfluencies. Add appropriate punctuation and capitalization to ensure readability, and format the text according to its style (not as a VTT file). Your response should only contain the corrected and formatted text, without repeating this prompt or adding commentary. If the content is unclear, return an empty fragment.",
                     },
-                    // {
-                    //     role: "user",
-                    //     content: `Your last best guess was: ${this.bestGuess}`,
-                    // },
                     { role: "user", content: chunk },
                 ];
                 logger.debug({ prompt }, "Prompt for refiner");
@@ -292,8 +315,9 @@ export class ClientConnection {
 
         const refinedTranscription = transcodedFragments
             .pipeThrough(segmentAccumulator)
-            .pipeThrough(transcriber)
-            .pipeThrough(refiner);
+            .pipeThrough(transcriber);
+
+        // .pipeThrough(refiner);
 
         refinedTranscription.pipeTo(
             new WritableStream({

@@ -1,11 +1,14 @@
+import { v4 } from "npm:uuid";
 import {
     isValidFragmentMessage,
+    isValidGuessMessage,
     isValidSocketMessage,
     logger,
     MessageType,
     parse,
     SocketMessage,
 } from "./socket_messages.ts";
+import type { TranscribedSegment } from "./whisper.ts";
 
 export class ServerConnection {
     protected socketInfo = {
@@ -18,6 +21,8 @@ export class ServerConnection {
         protected setSocketInfo = (_info: typeof this.socketInfo) => {},
         protected setConnectionStatus = (_status: string) => {},
         protected setTranscription = (_transcription: string) => {},
+        protected setVtt = (_vtt: string) => {},
+        protected addSegments = (_segments: TranscribedSegment[]) => {},
     ) {
         this.setupHandlers();
     }
@@ -61,7 +66,25 @@ export class ServerConnection {
         }
         switch (message.type) {
             case MessageType.PROPOSAL: {
-                this.setTranscription(message.data ?? "");
+                this.setTranscription(message.data as string ?? "");
+                break;
+            }
+            case MessageType.GUESS: {
+                if (!isValidGuessMessage(message)) {
+                    logger.error(message, "Invalid WebSocket guess message");
+                    return;
+                }
+                this.addSegments(
+                    (message.data.segments ?? []).map((seg) => ({
+                        ...seg,
+                        id: v4(),
+                        batchRecordedAt: message.recordedAt,
+                    })),
+                );
+                break;
+            }
+            case MessageType.VTT: {
+                this.setVtt(message.data as string ?? "");
                 break;
             }
             case MessageType.ERROR: {

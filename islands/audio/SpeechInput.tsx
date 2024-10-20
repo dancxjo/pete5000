@@ -3,6 +3,7 @@ import { MutableRef, useEffect, useRef } from "preact/hooks";
 import { arrayBufferToBase64 } from "../../lib/buffer_transformations.ts";
 import {
   type FragmentMessage,
+  type GuessMessage,
   MessageType,
 } from "../../lib/socket_messages.ts";
 import { pino } from "npm:pino";

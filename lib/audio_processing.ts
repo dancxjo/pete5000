@@ -76,10 +76,21 @@ export async function decode(audioData: Uint8Array): Promise<AudioBuffer> {
     return audioBuffer;
 }
 
-export async function join(
-    buffer1: AudioBuffer,
-    buffer2: AudioBuffer,
-): Promise<AudioBuffer> {
+export function join(
+    ...otherBuffers: AudioBuffer[]
+): AudioBuffer {
+    const buffer1 = otherBuffers.shift();
+    if (!buffer1) {
+        throw new Error("No audio buffers to join");
+    }
+    const buffer2 = otherBuffers.shift();
+    if (!buffer2) {
+        return buffer1;
+    }
+    if (otherBuffers.length > 0) {
+        const firstJoin = join(buffer1, buffer2);
+        return join(firstJoin, ...otherBuffers);
+    }
     const context = new AudioContext();
     const outputBuffer = context.createBuffer(
         1,
@@ -94,7 +105,7 @@ export async function join(
     return outputBuffer;
 }
 
-export async function toWav(audioBuffer: AudioBuffer): Promise<Uint8Array> {
+export function toWav(audioBuffer: AudioBuffer): Uint8Array {
     const wavData = audioBufferToWav(audioBuffer);
     return new Uint8Array(wavData);
 }

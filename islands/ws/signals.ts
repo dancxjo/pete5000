@@ -12,7 +12,7 @@ export function initializeWebSocket() {
     const host = globalThis.location.host;
     const protocol = globalThis.location.protocol;
     const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${wsProtocol}//${host}/api/asr`);
+    const socket = new WebSocket(`${wsProtocol}//${host}/api/stream`);
 
     socket.onopen = () => {
         console.log("WebSocket connected");
