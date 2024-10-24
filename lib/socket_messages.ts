@@ -1,10 +1,6 @@
 import { IS_BROWSER } from "$fresh/runtime.ts";
 import { pino } from "npm:pino";
-import {
-    isValidTranscription,
-    type TranscribedSegment,
-    type Transcription,
-} from "./whisper.ts";
+import type { TimelineItem } from "npm:vis-timeline";
 
 export const logger = pino({
     level: "info",
@@ -18,6 +14,7 @@ export enum MessageType {
     DEBUG = "TREE",
     VTT = "VTT",
     GUESS = "GUESS",
+    LOCATION = "LOCATION",
 }
 
 export interface SocketMessage {
@@ -58,8 +55,7 @@ export function isValidFragmentMessage(x: unknown): x is FragmentMessage {
 
 export interface GuessMessage extends SocketMessage {
     type: MessageType.GUESS;
-    data: Transcription;
-    recordedAt: string; // ISO 8601 timestamp
+    data: TimelineItem;
 }
 
 export function isValidGuessMessage(x: unknown): x is GuessMessage {
@@ -70,10 +66,11 @@ export function isValidGuessMessage(x: unknown): x is GuessMessage {
     if (message.type !== MessageType.GUESS) {
         return false;
     }
-    if (!isValidTranscription(message.data)) {
-        return false;
-    }
-    if (typeof message.recordedAt !== "string") {
+    if (
+        !message.data || typeof message.data !== "object" ||
+        message.data === null || !("item" in message.data) ||
+        !("start" in message.data) || !("end" in message.data)
+    ) {
         return false;
     }
     return true;

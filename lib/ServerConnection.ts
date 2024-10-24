@@ -1,4 +1,4 @@
-import { v4 } from "npm:uuid";
+import { TimelineItem } from "npm:vis-timeline";
 import {
     isValidFragmentMessage,
     isValidGuessMessage,
@@ -8,7 +8,6 @@ import {
     parse,
     SocketMessage,
 } from "./socket_messages.ts";
-import type { TranscribedSegment } from "./whisper.ts";
 
 export class ServerConnection {
     protected socketInfo = {
@@ -22,7 +21,7 @@ export class ServerConnection {
         protected setConnectionStatus = (_status: string) => {},
         protected setTranscription = (_transcription: string) => {},
         protected setVtt = (_vtt: string) => {},
-        protected addSegments = (_segments: TranscribedSegment[]) => {},
+        protected addItems = (_segments: TimelineItem[]) => {},
     ) {
         this.setupHandlers();
     }
@@ -74,13 +73,7 @@ export class ServerConnection {
                     logger.error(message, "Invalid WebSocket guess message");
                     return;
                 }
-                this.addSegments(
-                    (message.data.segments ?? []).map((seg) => ({
-                        ...seg,
-                        id: v4(),
-                        batchRecordedAt: message.recordedAt,
-                    })),
-                );
+                this.addItems([message.data as unknown as Item]);
                 break;
             }
             case MessageType.VTT: {
@@ -127,5 +120,12 @@ export class ServerConnection {
             return;
         }
         this.ws.send(JSON.stringify(message));
+    }
+
+    sendLocation(location: string) {
+        this.send({
+            type: MessageType.LOCATION,
+            data: location,
+        });
     }
 }

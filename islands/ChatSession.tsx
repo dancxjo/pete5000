@@ -5,8 +5,8 @@ import { IS_BROWSER } from "$fresh/runtime.ts";
 import { type FragmentMessage } from "../lib/socket_messages.ts";
 import { ServerConnection } from "../lib/ServerConnection.ts";
 import { pino } from "npm:pino";
-import { ASRTimeline } from "./AsrTimeline.tsx";
-import { TranscribedSegment } from "../lib/whisper.ts";
+import type { TimelineItem } from "npm:vis-timeline";
+import Geolocator from "./Geolocator.tsx";
 
 const logger = pino({ level: "info" });
 
@@ -19,10 +19,10 @@ export default function ChatSession() {
     });
     const [transcription, setTranscription] = useState("");
     const [vtt, setVtt] = useState("");
-    const [segments, setSegments] = useState<TranscribedSegment[]>([]);
+    const [items, setItems] = useState<TimelineItem[]>([]);
 
-    const addSegments = (newSegments: TranscribedSegment[]) => {
-        setSegments((oldSegments) => [...oldSegments, ...newSegments]);
+    const addSegments = (newSegments: TimelineItem[]) => {
+        setItems((oldItems) => [...oldItems, ...newSegments]);
     };
 
     if (IS_BROWSER) {
@@ -74,6 +74,14 @@ export default function ChatSession() {
         serverRef.current?.send(message);
     };
 
+    const reportLocation = (location: string) => {
+        if (!serverRef.current) {
+            logger.error("No server connection");
+            return;
+        }
+        serverRef.current?.sendLocation(location);
+    };
+
     return (
         <div>
             <details open={true}>
@@ -95,14 +103,14 @@ export default function ChatSession() {
             <SpeechInput
                 onFragment={handleFragment}
             />
+            <Geolocator onChange={reportLocation} />
             <div className="transcription-container">
                 <h3>Live Transcription</h3>
                 <textarea style="width:100%" value={vtt}></textarea>
-                <p
-                    className="transcription"
-                    dangerouslySetInnerHTML={{ __html: transcription }}
-                />
-                <ASRTimeline segments={segments} />
+                <textarea style="width:100%" value={transcription}></textarea>
+                <textarea style="width:100%" value={JSON.stringify(items)}>
+                </textarea>
+                {/* <ASRTimeline items={items} /> */}
             </div>
         </div>
     );

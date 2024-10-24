@@ -4,6 +4,21 @@ import { AudioContext } from "npm:web-audio-api";
 import { v4 as uuidv4 } from "npm:uuid";
 import { join as pathJoin } from "jsr:@std/path";
 
+/** Detects if an audio buffer is mostly silent based on a given threshold */
+export function detectSilence(
+    audioBuffer: AudioBuffer,
+    threshold: number = 0.003,
+): boolean {
+    return false;
+    const channelData = audioBuffer.getChannelData(0);
+    for (let i = 0; i < channelData.length; i++) {
+        if (Math.abs(channelData[i]) > threshold) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** Clips a segment of audio from an audiobuffer from a given index to an end index */
 export function clip(
     audioBuffer: AudioBuffer,
