@@ -8,8 +8,11 @@ import * as $api_asr from "./routes/api/asr.ts";
 import * as $api_stream from "./routes/api/stream.ts";
 import * as $index from "./routes/index.tsx";
 import * as $prompt from "./routes/prompt.tsx";
+import * as $reply from "./routes/reply.tsx";
+import * as $say from "./routes/say.tsx";
 import * as $AsrTimeline from "./islands/AsrTimeline.tsx";
 import * as $ChatSession from "./islands/ChatSession.tsx";
+import * as $Geolocator from "./islands/Geolocator.tsx";
 import * as $Heart from "./islands/Heart.tsx";
 import * as $Transcription from "./islands/Transcription.tsx";
 import * as $audio_SpeechInput from "./islands/audio/SpeechInput.tsx";
@@ -24,10 +27,13 @@ const manifest = {
     "./routes/api/stream.ts": $api_stream,
     "./routes/index.tsx": $index,
     "./routes/prompt.tsx": $prompt,
+    "./routes/reply.tsx": $reply,
+    "./routes/say.tsx": $say,
   },
   islands: {
     "./islands/AsrTimeline.tsx": $AsrTimeline,
     "./islands/ChatSession.tsx": $ChatSession,
+    "./islands/Geolocator.tsx": $Geolocator,
     "./islands/Heart.tsx": $Heart,
     "./islands/Transcription.tsx": $Transcription,
     "./islands/audio/SpeechInput.tsx": $audio_SpeechInput,

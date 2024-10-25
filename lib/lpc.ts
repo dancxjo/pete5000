@@ -4,7 +4,7 @@ import neo4j from "npm:neo4j-driver";
 import { pino } from "npm:pino";
 import YAML from "npm:json-to-pretty-yaml";
 
-const logger = pino({ level: "info" });
+const logger = pino({ level: "debug" });
 
 const neo4jUrl = Deno.env.get("NEO4J_HOST") ?? "bolt://localhost:7687";
 const neo4jUser = Deno.env.get("NEO4J_USER") ?? "neo4j";
@@ -46,6 +46,17 @@ class LanguageProcessingComponent {
 
     async runCypher(query: string, params: object = {}) {
         return runCypher(query, params);
+    }
+
+    async lastThought() {
+        const query = `
+            MATCH (t:Thought)
+            RETURN t.content AS content, t.timestamp AS timestamp
+            ORDER BY t.timestamp DESC
+            LIMIT 1
+        `;
+        const results = await runCypher(query);
+        return results[0]?.content;
     }
 
     async instruct(
@@ -96,7 +107,7 @@ class LanguageProcessingComponent {
         // Use Ollama for processing the prompt
         const { response } = await this.ollama.generate({
             prompt,
-            model: "llama3.2",
+            model: "gemma2",
         });
 
         // Log the response in the graph
@@ -109,10 +120,12 @@ class LanguageProcessingComponent {
         const timestamp = new Date().toISOString();
         const query = `
             MERGE (t:Thought {timestamp: $timestamp, content: $response})
+            SET t.instruction = $instruction
             MERGE (me:Self)
             MERGE (me)-[:THOUGHT]->(t)
         `;
         const params = {
+            instruction,
             timestamp,
             response,
         };
@@ -170,11 +183,10 @@ class LanguageProcessingComponent {
     async tick() {
         this.tickCounter++;
         logger.info(`Tick ${this.tickCounter}`);
-        const response = await this.instruct(
-            "Reflect on the current state and update ongoing thoughts.",
-            {},
-        );
-        await this.logThought("Lightweight reflection", response);
+        const instruction =
+            "Reflect on the current state and update ongoing thoughts. Analyze recent sensations and attempt to make sense of them. Produce a coherent summary of the ongoing situation.";
+        const response = await this.instruct(instruction);
+        await this.logThought(instruction, response);
     }
 }
 
